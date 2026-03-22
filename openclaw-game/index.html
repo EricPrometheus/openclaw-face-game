@@ -1225,7 +1225,7 @@
         ctx.font = '500 15px -apple-system, system-ui, sans-serif';
         ctx.textAlign = 'center';
 
-        const text = '请面对摄像头（也可用鼠标/键盘控制）';
+        const text = '请面对摄像头';
         const tw = ctx.measureText(text).width;
         const cx = canvas.width / 2;
         const cy = canvas.height / 2;
@@ -1452,22 +1452,7 @@
     });
 
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { if (G.running) pauseGame(); return; }
-        if (!G.running || G.paused) return;
-        if (e.key === 'ArrowLeft' || e.key === 'a') {
-            G.basketX = Math.max(0.05, G.basketX - 0.03);
-            G.faceDetected = true;
-        }
-        if (e.key === 'ArrowRight' || e.key === 'd') {
-            G.basketX = Math.min(0.95, G.basketX + 0.03);
-            G.faceDetected = true;
-        }
-    });
-
-    canvas.addEventListener('mousemove', (e) => {
-        if (!G.running || G.paused) return;
-        G.basketX = e.clientX / canvas.width;
-        G.faceDetected = true;
+        if (e.key === 'Escape') { if (G.running) pauseGame(); }
     });
 
     // 初始化
