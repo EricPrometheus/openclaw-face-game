@@ -576,8 +576,8 @@
         <div class="instructions-grid">
             <div class="inst-card">
                 <span class="ic-icon">🎥</span>
-                <div class="ic-title">头部追踪</div>
-                <div class="ic-desc">肤色检测算法，不动也能追踪</div>
+                <div class="ic-title">AI 人脸追踪</div>
+                <div class="ic-desc">浏览器原生 FaceDetector，零外部 AI 库</div>
             </div>
             <div class="inst-card">
                 <span class="ic-icon">🧺</span>
@@ -664,7 +664,8 @@
         faceDetected: false,
         // 追踪内部状态
         motionCenterX: 0.5,
-        motionWeight: 0,  // 运动量的权重，用于判断是否有人在
+        motionWeight: 0,
+        faceBox: null,  // 运动量的权重，用于判断是否有人在
         // 游戏对象
         items: [],
         particles: [],
@@ -756,13 +757,147 @@
     }
 
     // =====================================================
-    //  头部追踪：肤色检测 + 竖直投影法（零外部依赖）
-    //  原理：在画面上部区域找肤色像素，统计 X 方向投影，取峰值作为头部中心
-    //  优势：无需运动、不受光照影响、持续追踪
+    //  头部追踪：浏览器原生 FaceDetector API（零外部依赖）
+    //  原理：Chrome/Edge 内置 AI 人脸检测，返回精确边界框
+    //  优势：零依赖、零加载、高精度、不动也能追踪
+    //  兼容：Chrome 70+ / Edge 79+，Firefox/Safari 用肤色检测 fallback
     // =====================================================
-    const ANALYSIS_W = 80;   // 超低分辨率，够用且快
+    let faceDetector = null;
+    let useNativeFaceDetector = false;
+
+    async function initFaceDetector() {
+        if ('FaceDetector' in window) {
+            try {
+                faceDetector = new FaceDetector({ maxDetectedFaces: 1, fastMode: true });
+                // 验证是否真的可用（某些浏览器有 API 但不工作）
+                const test = await faceDetector.detect(aCanvas);
+                useNativeFaceDetector = true;
+                console.log('FaceDetector API 可用（原生 AI 人脸检测）');
+                return;
+            } catch (e) {
+                console.warn('FaceDetector API 不可用，使用肤色检测 fallback:', e.message);
+            }
+        }
+        console.log('FaceDetector API 不支持，使用肤色检测 fallback');
+    }
+
+    async function detectHeadPosition() {
+        if (!G.running || G.paused || !video.videoWidth) return;
+
+        const now = performance.now();
+        if (!detectHeadPosition._last || now - detectHeadPosition._last < 50) return;
+        detectHeadPosition._last = now;
+
+        if (useNativeFaceDetector && faceDetector) {
+            await detectByFaceDetector();
+        } else {
+            detectBySkinColor();
+        }
+    }
+
+    // ===== 方法 A：浏览器原生 FaceDetector =====
+    async function detectByFaceDetector() {
+        try {
+            // 直接从 video 元素检测（无需手动绘制 canvas）
+            const faces = await faceDetector.detect(video);
+            if (faces.length > 0) {
+                const box = faces[0].boundingBox;
+                // boundingBox.x 是相对于视频元素的原生坐标（未镜像）
+                // 镜像翻转：屏幕右 = 视频左
+                const faceCenterX = 1 - ((box.x + box.width / 2) / video.videoWidth);
+                const faceWidth = box.width / video.videoWidth;
+
+                // 只信任足够大的人脸（避免远处误检）
+                if (faceWidth > 0.08) {
+                    G.motionCenterX = G.motionCenterX * 0.35 + faceCenterX * 0.65;
+                    G.headX = Math.max(0.02, Math.min(0.98, G.motionCenterX));
+                    G.faceDetected = true;
+                    G.motionWeight = Math.min(1, G.motionWeight + 0.2);
+
+                    // 存储边界框用于绘制标记
+                    G.faceBox = {
+                        x1: box.x,
+                        y1: box.y,
+                        x2: box.x + box.width,
+                        y2: box.y + box.height,
+                    };
+                }
+            } else {
+                G.motionWeight = Math.max(0, G.motionWeight - 0.03);
+                if (G.motionWeight < 0.05) {
+                    G.faceDetected = false;
+                    G.faceBox = null;
+                }
+            }
+        } catch (e) {
+            // 偶发错误忽略
+        }
+    }
+
+    // ===== 方法 B：肤色检测 fallback =====
+    const ANALYSIS_W = 80;
     const ANALYSIS_H = 60;
 
+    function detectBySkinColor() {
+        aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
+        const imageData = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
+        const data = imageData.data;
+        const histogram = new Float32Array(ANALYSIS_W);
+
+        const regionTop = 1;
+        const regionBottom = Math.floor(ANALYSIS_H * 0.6);
+        let skinPixels = 0;
+
+        for (let y = regionTop; y < regionBottom; y++) {
+            for (let x = 0; x < ANALYSIS_W; x++) {
+                const idx = (y * ANALYSIS_W + x) * 4;
+                const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+
+                const isSkinRGB = r > 80 && g > 30 && b > 15 && r > g && r > b && (r - g) > 12 && Math.abs(r - g) < 130;
+                const cb = b - ((r + g) >> 1) + 128;
+                const cr = r - ((g + b) >> 1) + 128;
+                const isSkinYCbCr = cr > 130 && cr < 180 && cb > 75 && cb < 135;
+
+                if (isSkinRGB || isSkinYCbCr) {
+                    histogram[x] += 1;
+                    skinPixels++;
+                }
+            }
+        }
+
+        const minSkinPixels = ANALYSIS_W * (regionBottom - regionTop) * 0.05;
+
+        if (skinPixels > minSkinPixels) {
+            let maxVal = 0, peakX = ANALYSIS_W / 2;
+            const smoothed = new Float32Array(ANALYSIS_W);
+            for (let x = 1; x < ANALYSIS_W - 1; x++) {
+                smoothed[x] = histogram[x - 1] * 0.25 + histogram[x] * 0.5 + histogram[x + 1] * 0.25;
+            }
+            smoothed[0] = histogram[0] * 0.6 + histogram[1] * 0.4;
+            smoothed[ANALYSIS_W - 1] = histogram[ANALYSIS_W - 2] * 0.4 + histogram[ANALYSIS_W - 1] * 0.6;
+
+            for (let x = 0; x < ANALYSIS_W; x++) {
+                if (smoothed[x] > maxVal) { maxVal = smoothed[x]; peakX = x; }
+            }
+
+            const rawX = 1 - (peakX / ANALYSIS_W);
+            G.motionCenterX = G.motionCenterX * 0.4 + rawX * 0.6;
+            G.headX = Math.max(0.02, Math.min(0.98, G.motionCenterX));
+            G.faceDetected = true;
+            G.motionWeight = Math.min(1, G.motionWeight + 0.2);
+            G.faceBox = null;
+        } else {
+            G.motionWeight = Math.max(0, G.motionWeight - 0.03);
+            if (G.motionWeight < 0.05) {
+                G.faceDetected = false;
+                G.faceBox = null;
+            }
+        }
+    }
+
+    // =====================================================
+    //  摄像头初始化
+    // =====================================================
     async function initCamera() {
         loadingEl.style.display = 'flex';
         loadingText.textContent = '正在启动摄像头…';
@@ -777,22 +912,21 @@
             await new Promise(resolve => { video.onloadedmetadata = resolve; });
             await video.play();
 
-            // 设置分析画布尺寸
+            // 设置分析画布（肤色检测 fallback 用）
             aCanvas.width = ANALYSIS_W;
             aCanvas.height = ANALYSIS_H;
 
-            // 预热：等摄像头稳定
-            loadBar.style.width = '60%';
-            loadingText.textContent = '正在校准头部追踪…';
-            for (let i = 0; i < 15; i++) {
-                await new Promise(r => requestAnimationFrame(r));
-            }
+            // 初始化人脸检测器
+            loadBar.style.width = '50%';
+            loadingText.textContent = '正在初始化人脸检测…';
+            await initFaceDetector();
 
             loadBar.style.width = '100%';
-            loadingText.textContent = '准备就绪！';
-            await new Promise(r => setTimeout(r, 400));
+            const methodName = useNativeFaceDetector ? '原生 AI 人脸检测' : '肤色检测';
+            loadingText.textContent = `准备就绪！（${methodName}）`;
+            await new Promise(r => setTimeout(r, 500));
             loadingEl.style.display = 'none';
-            showToast('摄像头就绪，头部追踪已启动', 'success');
+            showToast(`摄像头就绪 — ${methodName}模式`, 'success');
             return true;
         } catch (err) {
             console.error('Camera error:', err);
@@ -808,96 +942,6 @@
             loadBar.style.width = '0%';
             document.getElementById('loading-back-btn').style.display = 'inline-block';
             return false;
-        }
-    }
-
-    // 肤色检测核心函数
-    function detectHeadPosition() {
-        if (!G.running || G.paused || !video.videoWidth) return;
-
-        const now = performance.now();
-        if (!detectHeadPosition._last || now - detectHeadPosition._last < 60) return;
-        detectHeadPosition._last = now;
-
-        // 绘制当前帧到低分辨率画布
-        aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
-        const imageData = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
-        const data = imageData.data;
-
-        // X 方向投影直方图
-        const histogram = new Float32Array(ANALYSIS_W);
-
-        // 感兴趣区域：画面上部 60%（头部区域）
-        const regionTop = 1;
-        const regionBottom = Math.floor(ANALYSIS_H * 0.6);
-
-        let skinPixels = 0;
-
-        for (let y = regionTop; y < regionBottom; y++) {
-            for (let x = 0; x < ANALYSIS_W; x++) {
-                const idx = (y * ANALYSIS_W + x) * 4;
-                const r = data[idx];
-                const g = data[idx + 1];
-                const b = data[idx + 2];
-
-                // 多重肤色检测条件（覆盖不同肤色 + 光照）
-                // 条件1: RGB 规则 (适用于大多数肤色)
-                const isSkinRGB = r > 80 && g > 30 && b > 15 &&
-                                  r > g && r > b &&
-                                  (r - g) > 12 &&
-                                  Math.abs(r - g) < 130;
-
-                // 条件2: YCbCr 色彩空间（更鲁棒）
-                const cb = b - ((r + g) >> 1) + 128;
-                const cr = r - ((g + b) >> 1) + 128;
-                const isSkinYCbCr = cr > 130 && cr < 180 && cb > 75 && cb < 135;
-
-                if (isSkinRGB || isSkinYCbCr) {
-                    histogram[x] += 1;
-                    skinPixels++;
-                }
-            }
-        }
-
-        // 需要足够多的肤色像素才算检测到
-        const minSkinPixels = ANALYSIS_W * (regionBottom - regionTop) * 0.05; // 5%
-
-        if (skinPixels > minSkinPixels) {
-            // 找直方图最大值（X 投影的峰值 = 头部水平中心）
-            let maxVal = 0;
-            let peakX = ANALYSIS_W / 2;
-
-            // 高斯平滑（简单版：3像素窗口）
-            const smoothed = new Float32Array(ANALYSIS_W);
-            for (let x = 1; x < ANALYSIS_W - 1; x++) {
-                smoothed[x] = histogram[x - 1] * 0.25 + histogram[x] * 0.5 + histogram[x + 1] * 0.25;
-            }
-            smoothed[0] = histogram[0] * 0.6 + histogram[1] * 0.4;
-            smoothed[ANALYSIS_W - 1] = histogram[ANALYSIS_W - 2] * 0.4 + histogram[ANALYSIS_W - 1] * 0.6;
-
-            for (let x = 0; x < ANALYSIS_W; x++) {
-                if (smoothed[x] > maxVal) {
-                    maxVal = smoothed[x];
-                    peakX = x;
-                }
-            }
-
-            // 归一化到 0~1 并镜像翻转（视频是镜像的）
-            const rawX = 1 - (peakX / ANALYSIS_W);
-
-            // 稳定追踪：加权平均
-            G.motionCenterX = G.motionCenterX * 0.4 + rawX * 0.6;
-
-            // 映射到篮子范围（留一点边距）
-            G.headX = Math.max(0.02, Math.min(0.98, G.motionCenterX));
-            G.faceDetected = true;
-            G.motionWeight = Math.min(1, G.motionWeight + 0.2);
-        } else {
-            // 肤色像素不足，逐渐降低检测置信度
-            G.motionWeight = Math.max(0, G.motionWeight - 0.03);
-            if (G.motionWeight < 0.05) {
-                G.faceDetected = false;
-            }
         }
     }
 
@@ -1026,10 +1070,10 @@
             trackStatus.classList.add('show');
             if (G.faceDetected) {
                 trackDot.className = '';
-                trackLabel.textContent = '头部追踪中';
+                trackLabel.textContent = useNativeFaceDetector ? 'AI 人脸追踪中' : '肤色追踪中';
             } else {
                 trackDot.className = 'lost';
-                trackLabel.textContent = '未检测到头部移动';
+                trackLabel.textContent = '未检测到人脸';
             }
         } else {
             trackStatus.classList.remove('show');
@@ -1131,6 +1175,51 @@
         const py = canvas.height - 100;
 
         ctx.save();
+
+        // 绘制人脸边界框（仅 FaceDetector 模式）
+        if (G.faceBox && useNativeFaceDetector) {
+            const box = G.faceBox;
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            const cw = canvas.width;
+            const ch = canvas.height;
+
+            const x1 = cw - (box.x2 / vw) * cw;
+            const y1 = (box.y1 / vh) * ch;
+            const x2 = cw - (box.x1 / vw) * cw;
+            const y2 = (box.y2 / vh) * ch;
+            const bw = x2 - x1;
+            const bh = y2 - y1;
+            const cornerLen = Math.min(bw, bh) * 0.2;
+
+            ctx.strokeStyle = 'rgba(0, 245, 212, 0.6)';
+            ctx.lineWidth = 2.5;
+            ctx.lineCap = 'round';
+            ctx.setLineDash([]);
+
+            // 四角标记
+            ctx.beginPath();
+            ctx.moveTo(x1, y1 + cornerLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + cornerLen, y1);
+            ctx.moveTo(x2 - cornerLen, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + cornerLen);
+            ctx.moveTo(x1, y2 - cornerLen); ctx.lineTo(x1, y2); ctx.lineTo(x1 + cornerLen, y2);
+            ctx.moveTo(x2 - cornerLen, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - cornerLen);
+            ctx.stroke();
+
+            // 中心十字
+            const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0, 245, 212, 0.4)';
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
+            ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
+            ctx.strokeStyle = 'rgba(0, 245, 212, 0.3)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+
+        // 从篮子向上的虚线
         ctx.strokeStyle = 'rgba(0, 245, 212, 0.4)';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([4, 4]);
@@ -1247,7 +1336,7 @@
     function update(dt) {
         if (!G.running || G.paused) return;
 
-        // 肤色检测头部追踪
+        // 人脸检测头部追踪
         detectHeadPosition();
 
         // 平滑跟随
