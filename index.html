@@ -384,6 +384,25 @@
             font-size: 13px; color: rgba(255,255,255,0.5); font-weight: 500;
         }
 
+        #loading-back-btn {
+            margin-top: 16px;
+            padding: 8px 24px;
+            font-size: 12px;
+            font-weight: 600;
+            color: rgba(255,255,255,0.5);
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            cursor: pointer;
+            display: none;
+            transition: color 0.2s, border-color 0.2s;
+        }
+
+        #loading-back-btn:hover {
+            color: #fff;
+            border-color: rgba(255,255,255,0.3);
+        }
+
         .load-progress {
             width: 200px; height: 3px;
             background: rgba(255,255,255,0.08);
@@ -532,6 +551,7 @@
         <div class="spinner"></div>
         <div class="load-text" id="loading-text">正在加载人脸检测模型…</div>
         <div class="load-progress"><div class="load-progress-bar" id="load-bar"></div></div>
+        <button id="loading-back-btn">返回首页</button>
     </div>
 
     <!-- 游戏结束 -->
@@ -691,33 +711,89 @@
         loadBar.style.width = '10%';
 
         try {
-            // 加载模型
+            // 第一步：加载 BlazeFace 模型（带超时）
             loadBar.style.width = '30%';
-            blazefaceModel = await blazeface.load();
+            try {
+                const modelPromise = blazeface.load();
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('模型加载超时（30s）')), 30000)
+                );
+                blazefaceModel = await Promise.race([modelPromise, timeoutPromise]);
+            } catch (modelErr) {
+                console.error('Model load error:', modelErr);
+                loadingText.textContent = '模型加载失败，尝试备用源…';
+                // 备用：用 jsdelivr CDN 重新加载脚本
+                try {
+                    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js');
+                    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js');
+                    blazefaceModel = await blazeface.load();
+                } catch (backupErr) {
+                    console.error('Backup model load also failed:', backupErr);
+                    loadingText.textContent = 'AI 模型加载失败（网络问题），已切换为鼠标模式';
+                    loadBar.style.width = '50%';
+                    await new Promise(r => setTimeout(r, 2000));
+                    // 即使模型加载失败也继续启动游戏（用鼠标/键盘控制）
+                    await startCameraOnly();
+                    return true;
+                }
+            }
             loadBar.style.width = '60%';
 
-            // 启动摄像头
-            loadingText.textContent = '正在启动摄像头…';
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-                audio: false,
-            });
-            video.srcObject = stream;
-            await new Promise(resolve => { video.onloadedmetadata = resolve; });
-            await video.play();
+            // 第二步：启动摄像头
+            await startCameraOnly();
 
             loadBar.style.width = '100%';
             loadingText.textContent = '准备就绪！';
             await new Promise(r => setTimeout(r, 400));
             loadingEl.style.display = 'none';
-            showToast('摄像头就绪，人脸检测已启动', 'success');
+            if (blazefaceModel) {
+                showToast('摄像头就绪，人脸检测已启动', 'success');
+            } else {
+                showToast('摄像头就绪（鼠标/键盘控制）', 'info');
+            }
             return true;
         } catch (err) {
             console.error('Init error:', err);
-            loadingText.textContent = '加载失败 — 请允许摄像头权限后刷新';
+            if (err.name === 'NotAllowedError') {
+                loadingText.textContent = '摄像头权限被拒绝 — 请在浏览器地址栏点击锁图标允许摄像头';
+            } else if (err.name === 'NotFoundError') {
+                loadingText.textContent = '未检测到摄像头 — 请连接摄像头后刷新';
+            } else if (err.name === 'NotReadableError') {
+                loadingText.textContent = '摄像头被其他程序占用 — 请关闭后刷新';
+            } else {
+                loadingText.textContent = `加载失败: ${err.message}`;
+            }
             loadBar.style.width = '0%';
+            document.getElementById('loading-back-btn').style.display = 'inline-block';
             return false;
         }
+    }
+
+    // 动态加载脚本
+    function loadScript(src) {
+        return new Promise((resolve, reject) => {
+            // 检查是否已加载
+            const existing = document.querySelector(`script[src="${src}"]`);
+            if (existing) { resolve(); return; }
+            const s = document.createElement('script');
+            s.src = src;
+            s.onload = resolve;
+            s.onerror = () => reject(new Error(`脚本加载失败: ${src}`));
+            document.head.appendChild(s);
+        });
+    }
+
+    // 仅启动摄像头（不含模型加载）
+    async function startCameraOnly() {
+        loadingText.textContent = '正在启动摄像头…';
+        loadBar.style.width = '70%';
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+        });
+        video.srcObject = stream;
+        await new Promise(resolve => { video.onloadedmetadata = resolve; });
+        await video.play();
     }
 
     // 定期运行人脸检测（不阻塞渲染）
@@ -1333,6 +1409,11 @@
     pauseBtn.addEventListener('click', pauseGame);
     document.getElementById('resume-btn').addEventListener('click', pauseGame);
     document.getElementById('quit-btn').addEventListener('click', goHome);
+    document.getElementById('loading-back-btn').addEventListener('click', () => {
+        loadingEl.style.display = 'none';
+        document.getElementById('loading-back-btn').style.display = 'none';
+        startScreen.style.display = 'flex';
+    });
 
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') { if (G.running) pauseGame(); return; }
