@@ -4,9 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenClaw 人机交互 - 头部接水果</title>
-    <!-- TensorFlow.js + BlazeFace (纯本地推理，无需云端 API) -->
-    <script src="https://unpkg.com/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
-    <script src="https://unpkg.com/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js"></script>
+    <!-- 零外部 AI 依赖：纯浏览器原生 API + 帧差运动追踪 -->
     <style>
         :root {
             --accent: #00f5d4;
@@ -37,6 +35,11 @@
             object-fit: cover;
             transform: scaleX(-1);
             z-index: 1;
+        }
+
+        /* ========== 隐藏的分析画布 ========== */
+        #analysis-canvas {
+            display: none;
         }
 
         /* ========== 游戏画布 ========== */
@@ -132,6 +135,49 @@
             font-weight: 500;
             margin-top: 4px;
             font-variant-numeric: tabular-nums;
+        }
+
+        /* ========== 追踪状态指示 ========== */
+        #tracking-status {
+            position: fixed;
+            bottom: 56px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        #tracking-status.show { opacity: 1; }
+
+        #tracking-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 8px rgba(0,245,212,0.5);
+            transition: background 0.3s, box-shadow 0.3s;
+        }
+
+        #tracking-dot.lost {
+            background: var(--danger);
+            box-shadow: 0 0 8px rgba(255,107,107,0.5);
+        }
+
+        #tracking-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: rgba(255,255,255,0.5);
+            letter-spacing: 0.5px;
         }
 
         /* ========== 暂停按钮 ========== */
@@ -384,6 +430,18 @@
             font-size: 13px; color: rgba(255,255,255,0.5); font-weight: 500;
         }
 
+        .load-progress {
+            width: 200px; height: 3px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 2px; overflow: hidden; margin-top: 4px;
+        }
+
+        .load-progress-bar {
+            height: 100%; background: var(--accent);
+            border-radius: 2px; width: 0%;
+            transition: width 0.4s ease;
+        }
+
         #loading-back-btn {
             margin-top: 16px;
             padding: 8px 24px;
@@ -401,18 +459,6 @@
         #loading-back-btn:hover {
             color: #fff;
             border-color: rgba(255,255,255,0.3);
-        }
-
-        .load-progress {
-            width: 200px; height: 3px;
-            background: rgba(255,255,255,0.08);
-            border-radius: 2px; overflow: hidden; margin-top: 4px;
-        }
-
-        .load-progress-bar {
-            height: 100%; background: var(--accent);
-            border-radius: 2px; width: 0%;
-            transition: width 0.4s ease;
         }
 
         /* ========== 游戏结束 ========== */
@@ -474,6 +520,7 @@
 <body>
 
     <video id="video" autoplay playsinline></video>
+    <canvas id="analysis-canvas"></canvas>
     <canvas id="game-canvas"></canvas>
 
     <!-- HUD -->
@@ -494,6 +541,12 @@
     </div>
 
     <button id="pause-btn" title="暂停 (ESC)">❚❚</button>
+
+    <!-- 追踪状态 -->
+    <div id="tracking-status">
+        <div id="tracking-dot"></div>
+        <span id="tracking-label">头部追踪中</span>
+    </div>
 
     <div id="pause-overlay">
         <h2>已暂停</h2>
@@ -523,13 +576,13 @@
         <div class="instructions-grid">
             <div class="inst-card">
                 <span class="ic-icon">🎥</span>
-                <div class="ic-title">AI 面部追踪</div>
-                <div class="ic-desc">TensorFlow.js 本地推理</div>
+                <div class="ic-title">头部追踪</div>
+                <div class="ic-desc">纯浏览器运动检测，零外部 AI 库</div>
             </div>
             <div class="inst-card">
                 <span class="ic-icon">🧺</span>
                 <div class="ic-title">头部控制</div>
-                <div class="ic-desc">移动鼻尖来控制篮子</div>
+                <div class="ic-desc">移动头部来控制篮子左右移动</div>
             </div>
             <div class="inst-card">
                 <span class="ic-icon">🍉</span>
@@ -549,7 +602,7 @@
     <!-- 加载 -->
     <div id="loading">
         <div class="spinner"></div>
-        <div class="load-text" id="loading-text">正在加载人脸检测模型…</div>
+        <div class="load-text" id="loading-text">正在启动摄像头…</div>
         <div class="load-progress"><div class="load-progress-bar" id="load-bar"></div></div>
         <button id="loading-back-btn">返回首页</button>
     </div>
@@ -591,7 +644,6 @@
     const MAX_LEVEL = 5;
     const STORAGE_KEY = 'openclaw_best_score';
     const MILESTONES = [50, 100, 200, 350, 500, 750, 1000];
-    const DETECT_INTERVAL = 80; // 人脸检测间隔 ms（太快会卡）
 
     // =====================================================
     //  全局游戏状态
@@ -607,11 +659,13 @@
         missed: 0,
         level: 1,
         bestScore: parseInt(localStorage.getItem(STORAGE_KEY)) || 0,
-        // 人脸追踪
-        faceX: 0.5,
-        faceY: 0.5,
+        // 头部追踪
+        headX: 0.5,
         faceDetected: false,
-        faceBox: null,      // BlazeFace 返回的边界框
+        // 追踪内部状态
+        prevFrame: null,
+        motionCenterX: 0.5,
+        motionWeight: 0,  // 运动量的权重，用于判断是否有人在
         // 游戏对象
         items: [],
         particles: [],
@@ -629,8 +683,6 @@
         shakeTime: 0,
         // 连击横幅
         comboBannerTimer: 0,
-        // 检测计时
-        lastDetect: 0,
     };
 
     // =====================================================
@@ -639,6 +691,8 @@
     const video       = document.getElementById('video');
     const canvas      = document.getElementById('game-canvas');
     const ctx         = canvas.getContext('2d');
+    const aCanvas     = document.getElementById('analysis-canvas');
+    const aCtx        = aCanvas.getContext('2d', { willReadFrequently: true });
     const scoreEl     = document.getElementById('score-display');
     const comboEl     = document.getElementById('combo-display');
     const bestEl      = document.getElementById('best-display');
@@ -653,6 +707,9 @@
     const toastEl     = document.getElementById('toast');
     const comboBanner = document.getElementById('combo-banner');
     const startBestEl = document.getElementById('start-best');
+    const trackStatus = document.getElementById('tracking-status');
+    const trackDot    = document.getElementById('tracking-dot');
+    const trackLabel  = document.getElementById('tracking-label');
 
     // =====================================================
     //  Canvas 尺寸
@@ -700,68 +757,55 @@
     }
 
     // =====================================================
-    //  BlazeFace 人脸检测 (TensorFlow.js, 纯本地)
+    //  摄像头 + 运动检测头部追踪（零外部依赖）
     // =====================================================
-    let blazefaceModel = null;
-    let detectRAF = null;
+    const ANALYSIS_W = 160;  // 低分辨率分析，提升性能
+    const ANALYSIS_H = 120;
 
-    async function initFaceDetection() {
+    async function initCamera() {
         loadingEl.style.display = 'flex';
-        loadingText.textContent = '正在加载 TensorFlow.js 人脸检测模型…';
-        loadBar.style.width = '10%';
+        loadingText.textContent = '正在启动摄像头…';
+        loadBar.style.width = '20%';
 
         try {
-            // 第一步：加载 BlazeFace 模型（带超时）
-            loadBar.style.width = '30%';
-            try {
-                const modelPromise = blazeface.load();
-                const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('模型加载超时（30s）')), 30000)
-                );
-                blazefaceModel = await Promise.race([modelPromise, timeoutPromise]);
-            } catch (modelErr) {
-                console.error('Model load error:', modelErr);
-                loadingText.textContent = '模型加载失败，尝试备用源…';
-                // 备用：用 jsdelivr CDN 重新加载脚本
-                try {
-                    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js');
-                    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js');
-                    blazefaceModel = await blazeface.load();
-                } catch (backupErr) {
-                    console.error('Backup model load also failed:', backupErr);
-                    loadingText.textContent = 'AI 模型加载失败（网络问题），已切换为鼠标模式';
-                    loadBar.style.width = '50%';
-                    await new Promise(r => setTimeout(r, 2000));
-                    // 即使模型加载失败也继续启动游戏（用鼠标/键盘控制）
-                    await startCameraOnly();
-                    return true;
-                }
-            }
-            loadBar.style.width = '60%';
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+                audio: false,
+            });
+            video.srcObject = stream;
+            await new Promise(resolve => { video.onloadedmetadata = resolve; });
+            await video.play();
 
-            // 第二步：启动摄像头
-            await startCameraOnly();
+            // 设置分析画布尺寸
+            aCanvas.width = ANALYSIS_W;
+            aCanvas.height = ANALYSIS_H;
+
+            // 预热：等几帧让摄像头稳定
+            loadBar.style.width = '60%';
+            loadingText.textContent = '正在校准头部追踪…';
+            for (let i = 0; i < 10; i++) {
+                await new Promise(r => requestAnimationFrame(r));
+            }
+            // 抓一帧作为背景参考
+            aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
+            G.prevFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
 
             loadBar.style.width = '100%';
             loadingText.textContent = '准备就绪！';
             await new Promise(r => setTimeout(r, 400));
             loadingEl.style.display = 'none';
-            if (blazefaceModel) {
-                showToast('摄像头就绪，人脸检测已启动', 'success');
-            } else {
-                showToast('摄像头就绪（鼠标/键盘控制）', 'info');
-            }
+            showToast('摄像头就绪，头部追踪已启动', 'success');
             return true;
         } catch (err) {
-            console.error('Init error:', err);
+            console.error('Camera error:', err);
             if (err.name === 'NotAllowedError') {
-                loadingText.textContent = '摄像头权限被拒绝 — 请在浏览器地址栏点击锁图标允许摄像头';
+                loadingText.textContent = '摄像头权限被拒绝 — 请在地址栏点击锁图标允许摄像头';
             } else if (err.name === 'NotFoundError') {
                 loadingText.textContent = '未检测到摄像头 — 请连接摄像头后刷新';
             } else if (err.name === 'NotReadableError') {
                 loadingText.textContent = '摄像头被其他程序占用 — 请关闭后刷新';
             } else {
-                loadingText.textContent = `加载失败: ${err.message}`;
+                loadingText.textContent = `启动失败: ${err.message}`;
             }
             loadBar.style.width = '0%';
             document.getElementById('loading-back-btn').style.display = 'inline-block';
@@ -769,71 +813,70 @@
         }
     }
 
-    // 动态加载脚本
-    function loadScript(src) {
-        return new Promise((resolve, reject) => {
-            // 检查是否已加载
-            const existing = document.querySelector(`script[src="${src}"]`);
-            if (existing) { resolve(); return; }
-            const s = document.createElement('script');
-            s.src = src;
-            s.onload = resolve;
-            s.onerror = () => reject(new Error(`脚本加载失败: ${src}`));
-            document.head.appendChild(s);
-        });
-    }
+    // 运动检测：通过帧差法找到运动区域的质心
+    function detectMotion() {
+        if (!G.running || G.paused || !video.videoWidth || !G.prevFrame) return;
 
-    // 仅启动摄像头（不含模型加载）
-    async function startCameraOnly() {
-        loadingText.textContent = '正在启动摄像头…';
-        loadBar.style.width = '70%';
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-            audio: false,
-        });
-        video.srcObject = stream;
-        await new Promise(resolve => { video.onloadedmetadata = resolve; });
-        await video.play();
-    }
-
-    // 定期运行人脸检测（不阻塞渲染）
-    async function detectFace() {
-        if (!G.running || G.paused || !blazefaceModel || !video.videoWidth) return;
-
+        // 降频：每 3 帧分析一次
         const now = performance.now();
-        if (now - G.lastDetect < DETECT_INTERVAL) return;
-        G.lastDetect = now;
+        if (!detectMotion._last || now - detectMotion._last < 50) return;
+        detectMotion._last = now;
 
-        try {
-            const predictions = await blazefaceModel.estimateFaces(video, false);
+        // 绘制当前帧到低分辨率画布
+        aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
+        const currFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
+        const prev = G.prevFrame.data;
+        const curr = currFrame.data;
 
-            if (predictions.length > 0) {
-                const face = predictions[0];
-                // face.topLeft[0], face.bottomRight[0] 给出边界框
-                // 用边界框中心作为追踪点
-                const x1 = face.topLeft[0];
-                const y1 = face.topLeft[1];
-                const x2 = face.bottomRight[0];
-                const y2 = face.bottomRight[1];
+        // 帧差法：计算每个像素的运动量
+        let totalMotion = 0;
+        let weightedX = 0;
+        let weightSum = 0;
 
-                const centerX = (x1 + x2) / 2;
-                const centerY = (y1 + y2) / 2;
+        // 感兴趣区域：画面中间偏上（头部通常在这个区域）
+        const regionTop = Math.floor(ANALYSIS_H * 0.1);
+        const regionBottom = Math.floor(ANALYSIS_H * 0.65);
+        const regionLeft = Math.floor(ANALYSIS_W * 0.1);
+        const regionRight = Math.floor(ANALYSIS_W * 0.9);
+        const threshold = 30; // 像素差异阈值
 
-                // 镜像翻转 X，归一化到 0~1
-                const rawX = 1 - (centerX / video.videoWidth);
-                const rawY = centerY / video.videoHeight;
+        for (let y = regionTop; y < regionBottom; y += 2) {  // 步长 2，性能优化
+            for (let x = regionLeft; x < regionRight; x += 2) {
+                const idx = (y * ANALYSIS_W + x) * 4;
+                const dr = Math.abs(curr[idx] - prev[idx]);
+                const dg = Math.abs(curr[idx + 1] - prev[idx + 1]);
+                const db = Math.abs(curr[idx + 2] - prev[idx + 2]);
+                const diff = (dr + dg + db) / 3;
 
-                G.faceX = Math.max(0, Math.min(1, (rawX - 0.2) / 0.6));
-                G.faceY = rawY;
-                G.faceDetected = true;
-                G.faceBox = { x1, y1, x2, y2 };
-            } else {
-                G.faceDetected = false;
-                G.faceBox = null;
+                if (diff > threshold) {
+                    totalMotion += diff;
+                    weightedX += x * diff;
+                    weightSum += diff;
+                }
             }
-        } catch (e) {
-            // 检测偶发错误忽略，不影响游戏
         }
+
+        // 更新前一帧
+        G.prevFrame = currFrame;
+
+        if (weightSum > 500) {  // 有足够运动量
+            const motionX = weightedX / weightSum / ANALYSIS_W;
+            // 镜像翻转 + 映射到 0~1（加一些放大让小幅度偏头也有效果）
+            G.motionCenterX += (1 - motionX - G.motionCenterX) * 0.3;
+            G.motionWeight = Math.min(1, G.motionWeight + 0.15);
+
+            // 映射：将 0.15~0.85 的检测范围映射到 0~1
+            G.headX = Math.max(0, Math.min(1, (G.motionCenterX - 0.15) / 0.7));
+            G.faceDetected = true;
+        } else {
+            G.motionWeight = Math.max(0, G.motionWeight - 0.05);
+            if (G.motionWeight < 0.1) {
+                G.faceDetected = false;
+            }
+        }
+
+        // 缓慢衰减运动中心（防止跳变）
+        G.motionCenterX = Math.max(0, Math.min(1, G.motionCenterX));
     }
 
     // =====================================================
@@ -878,7 +921,7 @@
     }
 
     // =====================================================
-    //  粒子系统 (标记删除)
+    //  粒子系统
     // =====================================================
     function spawnParticles(x, y, color, count = 10) {
         for (let i = 0; i < count; i++) {
@@ -955,6 +998,20 @@
             document.getElementById(`pip-${i}`).className = 'lvl-pip' + (i < lvl ? ' on' : '');
         }
         document.getElementById('level-label').textContent = `Lv.${lvl}`;
+
+        // 追踪状态
+        if (G.running && !G.paused) {
+            trackStatus.classList.add('show');
+            if (G.faceDetected) {
+                trackDot.className = '';
+                trackLabel.textContent = '头部追踪中';
+            } else {
+                trackDot.className = 'lost';
+                trackLabel.textContent = '未检测到头部移动';
+            }
+        } else {
+            trackStatus.classList.remove('show');
+        }
     }
 
     // =====================================================
@@ -1043,81 +1100,35 @@
     }
 
     // =====================================================
-    //  绘制：人脸标记
+    //  绘制：头部追踪指示器
     // =====================================================
-    function drawFaceMarker() {
-        if (!G.faceDetected) return;
+    function drawTrackingIndicator() {
+        if (!G.faceDetected || !G.running) return;
 
-        // 画边界框
-        if (G.faceBox) {
-            const box = G.faceBox;
-            const vx = video.videoWidth;
-            const vy = video.videoHeight;
-            const cw = canvas.width;
-            const ch = canvas.height;
+        const px = G.basketX * canvas.width;
+        const py = canvas.height - 100;
 
-            // 映射视频坐标到画布坐标（镜像）
-            const x1 = cw - (box.x2 / vx) * cw;
-            const y1 = (box.y1 / vy) * ch;
-            const x2 = cw - (box.x1 / vx) * cw;
-            const y2 = (box.y2 / vy) * ch;
-            const bw = x2 - x1;
-            const bh = y2 - y1;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(0, 245, 212, 0.4)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
 
-            ctx.save();
+        // 从篮子向上的虚线
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px, py - 60);
+        ctx.stroke();
 
-            // 角落标记（不是完整方框，更有科技感）
-            const cornerLen = Math.min(bw, bh) * 0.2;
-            ctx.strokeStyle = 'rgba(0, 245, 212, 0.6)';
-            ctx.lineWidth = 2.5;
-            ctx.lineCap = 'round';
+        // 顶部小箭头
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(px - 6, py - 52);
+        ctx.lineTo(px, py - 60);
+        ctx.lineTo(px + 6, py - 52);
+        ctx.strokeStyle = 'rgba(0, 245, 212, 0.6)';
+        ctx.stroke();
 
-            // 左上角
-            ctx.beginPath();
-            ctx.moveTo(x1, y1 + cornerLen);
-            ctx.lineTo(x1, y1);
-            ctx.lineTo(x1 + cornerLen, y1);
-            ctx.stroke();
-
-            // 右上角
-            ctx.beginPath();
-            ctx.moveTo(x2 - cornerLen, y1);
-            ctx.lineTo(x2, y1);
-            ctx.lineTo(x2, y1 + cornerLen);
-            ctx.stroke();
-
-            // 左下角
-            ctx.beginPath();
-            ctx.moveTo(x1, y2 - cornerLen);
-            ctx.lineTo(x1, y2);
-            ctx.lineTo(x1 + cornerLen, y2);
-            ctx.stroke();
-
-            // 右下角
-            ctx.beginPath();
-            ctx.moveTo(x2 - cornerLen, y2);
-            ctx.lineTo(x2, y2);
-            ctx.lineTo(x2, y2 - cornerLen);
-            ctx.stroke();
-
-            // 中心点
-            const cx = (x1 + x2) / 2;
-            const cy = (y1 + y2) / 2;
-            ctx.beginPath();
-            ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(0, 245, 212, 0.5)';
-            ctx.fill();
-
-            // 十字线
-            ctx.beginPath();
-            ctx.moveTo(cx - 12, cy); ctx.lineTo(cx + 12, cy);
-            ctx.moveTo(cx, cy - 12); ctx.lineTo(cx, cy + 12);
-            ctx.strokeStyle = 'rgba(0, 245, 212, 0.4)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-
-            ctx.restore();
-        }
+        ctx.restore();
     }
 
     // =====================================================
@@ -1192,18 +1203,18 @@
         ctx.font = '500 15px -apple-system, system-ui, sans-serif';
         ctx.textAlign = 'center';
 
-        const text = '未检测到人脸 — 请面对摄像头';
+        const text = '移动头部来控制篮子（也可用鼠标/键盘）';
         const tw = ctx.measureText(text).width;
         const cx = canvas.width / 2;
         const cy = canvas.height / 2;
 
-        ctx.fillStyle = 'rgba(255, 107, 107, 0.15)';
+        ctx.fillStyle = 'rgba(0, 187, 249, 0.12)';
         const px = 20, py = 10;
         ctx.beginPath();
         ctx.roundRect(cx - tw / 2 - px, cy - 14, tw + px * 2, 36, 10);
         ctx.fill();
 
-        ctx.fillStyle = 'rgba(255, 150, 150, 0.9)';
+        ctx.fillStyle = 'rgba(150, 210, 255, 0.8)';
         ctx.fillText(text, cx, cy + 5);
         ctx.restore();
     }
@@ -1214,12 +1225,12 @@
     function update(dt) {
         if (!G.running || G.paused) return;
 
-        // 异步人脸检测（不阻塞渲染）
-        detectFace();
+        // 运动检测头部追踪
+        detectMotion();
 
         // 平滑跟随
         if (G.faceDetected) {
-            G.basketX += (G.faceX - G.basketX) * 0.25;
+            G.basketX += (G.headX - G.basketX) * 0.2;
         }
 
         // 生成
@@ -1323,7 +1334,7 @@
 
         if (G.running) {
             update(dt);
-            drawFaceMarker();
+            drawTrackingIndicator();
             drawItems(dt);
             drawBasket();
             drawParticles();
@@ -1344,6 +1355,7 @@
         G.spawnInterval = 1500; G.fallSpeed = 1.5;
         G.lastSpawn = 0; G.basketX = 0.5;
         G.lastMilestone = 0; G.shakeTime = 0; G.comboBannerTimer = 0;
+        G.motionCenterX = 0.5; G.motionWeight = 0;
         renderHearts();
     }
 
@@ -1352,6 +1364,11 @@
         G.running = true;
         G.paused = false;
         pauseBtn.style.display = 'flex';
+        // 重置参考帧
+        if (aCanvas.width > 0 && video.videoWidth > 0) {
+            aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
+            G.prevFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
+        }
         updateHUD();
     }
 
@@ -1360,11 +1377,17 @@
         G.paused = !G.paused;
         pauseOvl.style.display = G.paused ? 'flex' : 'none';
         pauseBtn.textContent = G.paused ? '▶' : '❚❚';
+        // 暂停/恢复时重置参考帧，避免暂停期间的变化被当作运动
+        if (!G.paused && video.videoWidth > 0) {
+            aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
+            G.prevFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
+        }
     }
 
     function gameOver() {
         G.running = false;
         pauseBtn.style.display = 'none';
+        trackStatus.classList.remove('show');
         const isNewBest = G.score > G.bestScore;
         if (isNewBest) {
             G.bestScore = G.score;
@@ -1384,6 +1407,7 @@
         pauseOvl.style.display = 'none';
         gameoverEl.style.display = 'none';
         pauseBtn.style.display = 'none';
+        trackStatus.classList.remove('show');
         startScreen.style.display = 'flex';
         startBestEl.innerHTML = G.bestScore > 0 ? `历史最佳：<span>${G.bestScore}</span>` : '';
     }
@@ -1393,7 +1417,7 @@
     // =====================================================
     document.getElementById('start-btn').addEventListener('click', async () => {
         startScreen.style.display = 'none';
-        const ok = await initFaceDetection();
+        const ok = await initCamera();
         if (ok) {
             startGame();
             requestAnimationFrame(gameLoop);
