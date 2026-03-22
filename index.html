@@ -4,10 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenClaw 人机交互 - 头部接水果</title>
-    <!-- MediaPipe CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <!-- TensorFlow.js + BlazeFace (纯本地推理，无需云端 API) -->
+    <script src="https://unpkg.com/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+    <script src="https://unpkg.com/@tensorflow-models/blazeface@0.1.0/dist/blazeface.js"></script>
     <style>
         :root {
             --accent: #00f5d4;
@@ -99,11 +98,8 @@
             transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
 
-        .hud-value.combo-val.pulse {
-            transform: scale(1.3);
-        }
+        .hud-value.combo-val.pulse { transform: scale(1.3); }
 
-        /* 生命值 - 心形容器 */
         .hearts-row {
             display: flex;
             gap: 6px;
@@ -121,9 +117,7 @@
             filter: grayscale(1);
         }
 
-        .heart.shake {
-            animation: heartShake 0.4s ease;
-        }
+        .heart.shake { animation: heartShake 0.4s ease; }
 
         @keyframes heartShake {
             0%, 100% { transform: scale(1); }
@@ -132,7 +126,6 @@
             60% { transform: scale(1.2) rotate(-5deg); }
         }
 
-        /* 高分 */
         .hud-best {
             font-size: 11px;
             color: rgba(255,255,255,0.3);
@@ -147,8 +140,7 @@
             top: 16px;
             right: 28px;
             z-index: 110;
-            width: 40px;
-            height: 40px;
+            width: 40px; height: 40px;
             border-radius: 12px;
             border: 1px solid rgba(255,255,255,0.15);
             background: var(--surface);
@@ -156,17 +148,14 @@
             color: rgba(255,255,255,0.6);
             font-size: 16px;
             cursor: pointer;
-            display: flex;
+            display: none;
             align-items: center;
             justify-content: center;
             transition: background 0.2s, color 0.2s;
             pointer-events: auto;
         }
 
-        #pause-btn:hover {
-            background: rgba(255,255,255,0.12);
-            color: #fff;
-        }
+        #pause-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
 
         /* ========== 暂停覆盖 ========== */
         #pause-overlay {
@@ -182,28 +171,18 @@
         }
 
         #pause-overlay h2 {
-            font-size: 40px;
-            font-weight: 800;
-            letter-spacing: -1px;
-            margin-bottom: 12px;
-            color: #fff;
+            font-size: 40px; font-weight: 800;
+            letter-spacing: -1px; margin-bottom: 12px; color: #fff;
         }
 
         #pause-overlay .hint {
-            font-size: 14px;
-            color: rgba(255,255,255,0.5);
-            margin-bottom: 36px;
+            font-size: 14px; color: rgba(255,255,255,0.5); margin-bottom: 36px;
         }
 
         .pause-btn {
-            padding: 12px 36px;
-            font-size: 15px;
-            font-weight: 700;
-            border: none;
-            border-radius: 14px;
-            cursor: pointer;
-            transition: transform 0.15s, box-shadow 0.15s;
-            margin: 0 8px;
+            padding: 12px 36px; font-size: 15px; font-weight: 700;
+            border: none; border-radius: 14px; cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s; margin: 0 8px;
         }
 
         .pause-btn.primary {
@@ -212,25 +191,19 @@
         }
 
         .pause-btn.secondary {
-            background: rgba(255,255,255,0.1);
-            color: #fff;
+            background: rgba(255,255,255,0.1); color: #fff;
             border: 1px solid rgba(255,255,255,0.15);
         }
 
-        .pause-btn:hover {
-            transform: scale(1.04);
-        }
+        .pause-btn:hover { transform: scale(1.04); }
 
-        /* ========== 难度指示器 ========== */
+        /* ========== 难度 ========== */
         #level-bar {
             position: fixed;
-            bottom: 20px;
-            left: 50%;
+            bottom: 20px; left: 50%;
             transform: translateX(-50%);
             z-index: 100;
-            display: flex;
-            align-items: center;
-            gap: 6px;
+            display: flex; align-items: center; gap: 6px;
             padding: 6px 14px;
             background: var(--surface);
             backdrop-filter: blur(12px);
@@ -240,8 +213,7 @@
         }
 
         .lvl-pip {
-            width: 8px; height: 8px;
-            border-radius: 50%;
+            width: 8px; height: 8px; border-radius: 50%;
             background: rgba(255,255,255,0.15);
             transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
@@ -253,36 +225,24 @@
         }
 
         #level-label {
-            font-size: 11px;
-            font-weight: 600;
+            font-size: 11px; font-weight: 600;
             color: rgba(255,255,255,0.4);
-            margin-left: 6px;
-            letter-spacing: 1px;
-            text-transform: uppercase;
+            margin-left: 6px; letter-spacing: 1px; text-transform: uppercase;
         }
 
         /* ========== Toast ========== */
         #toast {
             position: fixed;
-            top: 72px;
-            left: 50%;
+            top: 72px; left: 50%;
             transform: translateX(-50%) translateY(-16px);
-            padding: 8px 20px;
-            border-radius: 10px;
-            font-size: 13px;
-            font-weight: 600;
-            z-index: 150;
-            opacity: 0;
+            padding: 8px 20px; border-radius: 10px;
+            font-size: 13px; font-weight: 600;
+            z-index: 150; opacity: 0;
             transition: opacity 0.25s, transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
-            pointer-events: none;
-            backdrop-filter: blur(8px);
+            pointer-events: none; backdrop-filter: blur(8px);
         }
 
-        #toast.show {
-            opacity: 1;
-            transform: translateX(-50%) translateY(0);
-        }
-
+        #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
         #toast.success { background: rgba(0,245,212,0.85); color: #0a0a1a; }
         #toast.warning { background: rgba(255,107,107,0.85); color: #fff; }
         #toast.info    { background: rgba(0,187,249,0.85); color: #fff; }
@@ -291,23 +251,15 @@
         /* ========== 连击横幅 ========== */
         #combo-banner {
             position: fixed;
-            top: 50%;
-            left: 50%;
+            top: 50%; left: 50%;
             transform: translate(-50%, -50%) scale(0.5);
             z-index: 140;
-            font-size: 48px;
-            font-weight: 900;
-            letter-spacing: -2px;
-            opacity: 0;
-            pointer-events: none;
-            transition: none;
-            text-shadow: 0 0 40px rgba(255,217,61,0.5);
+            font-size: 48px; font-weight: 900; letter-spacing: -2px;
+            opacity: 0; pointer-events: none;
         }
 
         /* ========== 屏幕震动 ========== */
-        .screen-shake {
-            animation: shake 0.35s ease-out;
-        }
+        .screen-shake { animation: shake 0.35s ease-out; }
 
         @keyframes shake {
             0%, 100% { transform: translate(0, 0); }
@@ -330,7 +282,6 @@
             background: #0a0a1a;
         }
 
-        /* 启动界面背景动画 */
         #start-screen::before {
             content: '';
             position: absolute;
@@ -349,11 +300,8 @@
         #start-screen > * { position: relative; z-index: 1; }
 
         #start-screen h1 {
-            font-size: 52px;
-            font-weight: 900;
-            letter-spacing: -2px;
-            margin-bottom: 8px;
-            line-height: 1.1;
+            font-size: 52px; font-weight: 900;
+            letter-spacing: -2px; margin-bottom: 8px; line-height: 1.1;
         }
 
         #start-screen h1 .title-main {
@@ -363,19 +311,15 @@
         }
 
         #start-screen .subtitle {
-            font-size: 16px;
-            color: rgba(255,255,255,0.4);
-            margin-bottom: 52px;
-            font-weight: 400;
+            font-size: 16px; color: rgba(255,255,255,0.4);
+            margin-bottom: 52px; font-weight: 400;
         }
 
         .instructions-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 14px;
-            max-width: 520px;
-            margin-bottom: 44px;
-            width: 90%;
+            gap: 14px; max-width: 520px;
+            margin-bottom: 44px; width: 90%;
         }
 
         .inst-card {
@@ -392,58 +336,27 @@
             transform: translateY(-2px);
         }
 
-        .inst-card .ic-icon {
-            font-size: 32px;
-            margin-bottom: 8px;
-            display: block;
-        }
-
-        .inst-card .ic-title {
-            font-size: 13px;
-            font-weight: 700;
-            color: rgba(255,255,255,0.8);
-            margin-bottom: 4px;
-        }
-
-        .inst-card .ic-desc {
-            font-size: 11px;
-            color: rgba(255,255,255,0.35);
-            line-height: 1.4;
-        }
+        .inst-card .ic-icon { font-size: 32px; margin-bottom: 8px; display: block; }
+        .inst-card .ic-title { font-size: 13px; font-weight: 700; color: rgba(255,255,255,0.8); margin-bottom: 4px; }
+        .inst-card .ic-desc { font-size: 11px; color: rgba(255,255,255,0.35); line-height: 1.4; }
 
         .best-score-line {
-            font-size: 12px;
-            color: rgba(255,255,255,0.3);
-            margin-bottom: 20px;
-            font-variant-numeric: tabular-nums;
+            font-size: 12px; color: rgba(255,255,255,0.3);
+            margin-bottom: 20px; font-variant-numeric: tabular-nums;
         }
 
-        .best-score-line span {
-            color: var(--gold);
-            font-weight: 700;
-        }
+        .best-score-line span { color: var(--gold); font-weight: 700; }
 
         #start-btn {
-            padding: 14px 52px;
-            font-size: 16px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            color: #0a0a1a;
+            padding: 14px 52px; font-size: 16px; font-weight: 700;
+            letter-spacing: 0.5px; color: #0a0a1a;
             background: linear-gradient(135deg, var(--accent), var(--accent-2));
-            border: none;
-            border-radius: 16px;
-            cursor: pointer;
+            border: none; border-radius: 16px; cursor: pointer;
             transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
         }
 
-        #start-btn:hover {
-            transform: scale(1.05);
-            box-shadow: 0 0 50px rgba(0,245,212,0.3);
-        }
-
-        #start-btn:active {
-            transform: scale(0.98);
-        }
+        #start-btn:hover { transform: scale(1.05); box-shadow: 0 0 50px rgba(0,245,212,0.3); }
+        #start-btn:active { transform: scale(0.98); }
 
         /* ========== 加载 ========== */
         #loading {
@@ -468,25 +381,18 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         #loading .load-text {
-            font-size: 13px;
-            color: rgba(255,255,255,0.5);
-            font-weight: 500;
+            font-size: 13px; color: rgba(255,255,255,0.5); font-weight: 500;
         }
 
         .load-progress {
-            width: 200px;
-            height: 3px;
+            width: 200px; height: 3px;
             background: rgba(255,255,255,0.08);
-            border-radius: 2px;
-            overflow: hidden;
-            margin-top: 4px;
+            border-radius: 2px; overflow: hidden; margin-top: 4px;
         }
 
         .load-progress-bar {
-            height: 100%;
-            background: var(--accent);
-            border-radius: 2px;
-            width: 0%;
+            height: 100%; background: var(--accent);
+            border-radius: 2px; width: 0%;
             transition: width 0.4s ease;
         }
 
@@ -504,19 +410,15 @@
         }
 
         #gameover-screen h2 {
-            font-size: 20px;
-            font-weight: 600;
+            font-size: 20px; font-weight: 600;
             color: rgba(255,255,255,0.5);
-            letter-spacing: 3px;
-            text-transform: uppercase;
+            letter-spacing: 3px; text-transform: uppercase;
             margin-bottom: 4px;
         }
 
         .go-score {
-            font-size: 72px;
-            font-weight: 900;
-            letter-spacing: -3px;
-            line-height: 1;
+            font-size: 72px; font-weight: 900;
+            letter-spacing: -3px; line-height: 1;
             background: linear-gradient(135deg, var(--gold), #ff8a00);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -524,55 +426,35 @@
         }
 
         .go-new-best {
-            font-size: 12px;
-            font-weight: 700;
+            font-size: 12px; font-weight: 700;
             color: var(--gold);
-            letter-spacing: 2px;
-            text-transform: uppercase;
+            letter-spacing: 2px; text-transform: uppercase;
             margin-bottom: 32px;
-            opacity: 0;
-            transition: opacity 0.3s;
+            opacity: 0; transition: opacity 0.3s;
         }
 
         .go-new-best.show { opacity: 1; }
 
-        .go-stats {
-            display: flex;
-            gap: 32px;
-            margin-bottom: 40px;
-        }
+        .go-stats { display: flex; gap: 32px; margin-bottom: 40px; }
 
-        .go-stat {
-            text-align: center;
-        }
+        .go-stat { text-align: center; }
 
         .go-stat .gs-val {
-            font-size: 22px;
-            font-weight: 800;
-            font-variant-numeric: tabular-nums;
-            color: var(--accent);
+            font-size: 22px; font-weight: 800;
+            font-variant-numeric: tabular-nums; color: var(--accent);
         }
 
         .go-stat .gs-lbl {
-            font-size: 10px;
-            color: rgba(255,255,255,0.35);
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            margin-top: 2px;
+            font-size: 10px; color: rgba(255,255,255,0.35);
+            letter-spacing: 1.5px; text-transform: uppercase; margin-top: 2px;
         }
 
-        .go-btns {
-            display: flex;
-            gap: 12px;
-        }
+        .go-btns { display: flex; gap: 12px; }
     </style>
 </head>
 <body>
 
-    <!-- 视频背景 -->
     <video id="video" autoplay playsinline></video>
-
-    <!-- 游戏画布 -->
     <canvas id="game-canvas"></canvas>
 
     <!-- HUD -->
@@ -584,7 +466,7 @@
         </div>
         <div class="hud-group">
             <span class="hud-label">连击</span>
-            <span class="hud-value combo-val" id="combo-display">0</span>
+            <span class="hud-value combo-val" id="combo-display">—</span>
         </div>
         <div class="hud-group">
             <span class="hud-label">生命</span>
@@ -592,10 +474,8 @@
         </div>
     </div>
 
-    <!-- 暂停按钮 -->
     <button id="pause-btn" title="暂停 (ESC)">❚❚</button>
 
-    <!-- 暂停覆盖 -->
     <div id="pause-overlay">
         <h2>已暂停</h2>
         <p class="hint">按 ESC 或点击继续</p>
@@ -605,7 +485,6 @@
         </div>
     </div>
 
-    <!-- 难度 -->
     <div id="level-bar">
         <div class="lvl-pip on" id="pip-0"></div>
         <div class="lvl-pip" id="pip-1"></div>
@@ -615,10 +494,7 @@
         <span id="level-label">Lv.1</span>
     </div>
 
-    <!-- Toast -->
     <div id="toast"></div>
-
-    <!-- 连击横幅 -->
     <div id="combo-banner"></div>
 
     <!-- 启动界面 -->
@@ -629,12 +505,12 @@
             <div class="inst-card">
                 <span class="ic-icon">🎥</span>
                 <div class="ic-title">AI 面部追踪</div>
-                <div class="ic-desc">实时检测 468 个面部关键点</div>
+                <div class="ic-desc">TensorFlow.js 本地推理</div>
             </div>
             <div class="inst-card">
                 <span class="ic-icon">🧺</span>
                 <div class="ic-title">头部控制</div>
-                <div class="ic-desc">左右移动头部来控制篮子</div>
+                <div class="ic-desc">移动鼻尖来控制篮子</div>
             </div>
             <div class="inst-card">
                 <span class="ic-icon">🍉</span>
@@ -695,6 +571,7 @@
     const MAX_LEVEL = 5;
     const STORAGE_KEY = 'openclaw_best_score';
     const MILESTONES = [50, 100, 200, 350, 500, 750, 1000];
+    const DETECT_INTERVAL = 80; // 人脸检测间隔 ms（太快会卡）
 
     // =====================================================
     //  全局游戏状态
@@ -714,8 +591,8 @@
         faceX: 0.5,
         faceY: 0.5,
         faceDetected: false,
-        faceRaw: null,
-        // 游戏对象（使用标记删除，避免 splice）
+        faceBox: null,      // BlazeFace 返回的边界框
+        // 游戏对象
         items: [],
         particles: [],
         floatingTexts: [],
@@ -732,6 +609,8 @@
         shakeTime: 0,
         // 连击横幅
         comboBannerTimer: 0,
+        // 检测计时
+        lastDetect: 0,
     };
 
     // =====================================================
@@ -783,7 +662,7 @@
     function showComboBanner(combo) {
         if (!COMBO_MILESTONES.includes(combo)) return;
         comboBanner.textContent = `${combo} COMBO!`;
-        comboBanner.style.background = `linear-gradient(135deg, #ffd93d, #ff8a00)`;
+        comboBanner.style.background = 'linear-gradient(135deg, #ffd93d, #ff8a00)';
         comboBanner.style.webkitBackgroundClip = 'text';
         comboBanner.style.webkitTextFillColor = 'transparent';
         comboBanner.style.opacity = '1';
@@ -801,67 +680,83 @@
     }
 
     // =====================================================
-    //  MediaPipe Face Mesh
+    //  BlazeFace 人脸检测 (TensorFlow.js, 纯本地)
     // =====================================================
-    let faceMesh = null;
-    let cameraInstance = null;
+    let blazefaceModel = null;
+    let detectRAF = null;
 
-    async function initFaceMesh() {
+    async function initFaceDetection() {
         loadingEl.style.display = 'flex';
-        loadingText.textContent = '正在加载人脸检测模型…';
+        loadingText.textContent = '正在加载 TensorFlow.js 人脸检测模型…';
         loadBar.style.width = '10%';
 
         try {
-            faceMesh = new FaceMesh({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-            });
-
+            // 加载模型
             loadBar.style.width = '30%';
-
-            faceMesh.setOptions({
-                maxNumFaces: 1,
-                refineLandmarks: true,
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5,
-            });
-
-            faceMesh.onResults(onFaceResults);
-
+            blazefaceModel = await blazeface.load();
             loadBar.style.width = '60%';
+
+            // 启动摄像头
             loadingText.textContent = '正在启动摄像头…';
-
-            cameraInstance = new Camera(video, {
-                onFrame: async () => {
-                    if (faceMesh) await faceMesh.send({ image: video });
-                },
-                width: 1280,
-                height: 720,
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+                audio: false,
             });
+            video.srcObject = stream;
+            await new Promise(resolve => { video.onloadedmetadata = resolve; });
+            await video.play();
 
-            await cameraInstance.start();
             loadBar.style.width = '100%';
-
-            await new Promise(r => setTimeout(r, 300));
+            loadingText.textContent = '准备就绪！';
+            await new Promise(r => setTimeout(r, 400));
             loadingEl.style.display = 'none';
             showToast('摄像头就绪，人脸检测已启动', 'success');
             return true;
         } catch (err) {
-            console.error('FaceMesh init error:', err);
+            console.error('Init error:', err);
             loadingText.textContent = '加载失败 — 请允许摄像头权限后刷新';
+            loadBar.style.width = '0%';
             return false;
         }
     }
 
-    function onFaceResults(results) {
-        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-            const landmarks = results.multiFaceLandmarks[0];
-            const noseTip = landmarks[1];
-            G.faceX = 1 - noseTip.x; // 镜像翻转
-            G.faceY = noseTip.y;
-            G.faceDetected = true;
-            G.faceRaw = landmarks;
-        } else {
-            G.faceDetected = false;
+    // 定期运行人脸检测（不阻塞渲染）
+    async function detectFace() {
+        if (!G.running || G.paused || !blazefaceModel || !video.videoWidth) return;
+
+        const now = performance.now();
+        if (now - G.lastDetect < DETECT_INTERVAL) return;
+        G.lastDetect = now;
+
+        try {
+            const predictions = await blazefaceModel.estimateFaces(video, false);
+
+            if (predictions.length > 0) {
+                const face = predictions[0];
+                // face.topLeft[0], face.bottomRight[0] 给出边界框
+                // 用边界框中心作为追踪点
+                const x1 = face.topLeft[0];
+                const y1 = face.topLeft[1];
+                const x2 = face.bottomRight[0];
+                const y2 = face.bottomRight[1];
+
+                const centerX = (x1 + x2) / 2;
+                const centerY = (y1 + y2) / 2;
+
+                // 镜像翻转 X，归一化到 0~1
+                const rawX = 1 - (centerX / video.videoWidth);
+                const rawY = centerY / video.videoHeight;
+
+                G.faceX = Math.max(0, Math.min(1, (rawX - 0.2) / 0.6));
+                G.faceY = rawY;
+                G.faceDetected = true;
+                G.faceBox = { x1, y1, x2, y2 };
+            } else {
+                G.faceDetected = false;
+                G.faceBox = null;
+            }
+        } catch (e) {
+            // 检测偶发错误忽略，不影响游戏
         }
     }
 
@@ -926,14 +821,10 @@
         }
     }
 
-    // =====================================================
-    //  浮动文字 (标记删除)
-    // =====================================================
     function spawnFloatingText(x, y, text, color, big = false) {
         G.floatingTexts.push({
             x, y, text, color,
-            life: 1,
-            vy: big ? -3 : -2,
+            life: 1, vy: big ? -3 : -2,
             size: big ? 32 : 22,
             alive: true,
         });
@@ -969,10 +860,8 @@
     }
 
     function shakeHeart() {
-        const heartEl = document.getElementById(`heart-${G.lives}`);
-        if (heartEl) {
-            heartEl.classList.add('shake', 'lost');
-        }
+        const el = document.getElementById(`heart-${G.lives}`);
+        if (el) el.classList.add('shake', 'lost');
     }
 
     function pulseCombo() {
@@ -1005,9 +894,6 @@
         }
     }
 
-    // =====================================================
-    //  得分里程碑
-    // =====================================================
     function checkMilestone() {
         for (const m of MILESTONES) {
             if (G.score >= m && G.lastMilestone < m) {
@@ -1019,7 +905,7 @@
     }
 
     // =====================================================
-    //  绘制：篮子（增强质感）
+    //  绘制：篮子
     // =====================================================
     function drawBasket() {
         const px = G.basketX * canvas.width;
@@ -1030,11 +916,9 @@
         ctx.save();
         ctx.translate(px, py);
 
-        // 底部光晕
         ctx.shadowColor = 'rgba(0, 245, 212, 0.25)';
         ctx.shadowBlur = 30;
 
-        // 篮子主体 - 圆角梯形
         const topW = w / 2;
         const botW = w / 2 - 14;
         const r = 6;
@@ -1058,7 +942,6 @@
         ctx.fillStyle = grad;
         ctx.fill();
 
-        // 顶部高光
         ctx.beginPath();
         ctx.moveTo(-topW + r, 1);
         ctx.lineTo(topW - r, 1);
@@ -1068,7 +951,6 @@
 
         ctx.shadowBlur = 0;
 
-        // 编织纹理
         for (let i = 1; i <= 3; i++) {
             const t = i / 4;
             const ly = h * t;
@@ -1081,57 +963,85 @@
             ctx.stroke();
         }
 
-        // 内部高光
-        ctx.beginPath();
-        ctx.moveTo(-topW + 10, 4);
-        ctx.lineTo(topW - 10, 4);
-        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
         ctx.restore();
     }
 
     // =====================================================
-    //  绘制：人脸标记（更精致）
+    //  绘制：人脸标记
     // =====================================================
     function drawFaceMarker() {
         if (!G.faceDetected) return;
-        const px = G.faceX * canvas.width;
-        const py = G.faceY * canvas.height;
 
-        ctx.save();
+        // 画边界框
+        if (G.faceBox) {
+            const box = G.faceBox;
+            const vx = video.videoWidth;
+            const vy = video.videoHeight;
+            const cw = canvas.width;
+            const ch = canvas.height;
 
-        // 外圈 - 虚线
-        ctx.beginPath();
-        ctx.arc(px, py, 35, 0, Math.PI * 2);
-        ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = 'rgba(0, 245, 212, 0.25)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.setLineDash([]);
+            // 映射视频坐标到画布坐标（镜像）
+            const x1 = cw - (box.x2 / vx) * cw;
+            const y1 = (box.y1 / vy) * ch;
+            const x2 = cw - (box.x1 / vx) * cw;
+            const y2 = (box.y2 / vy) * ch;
+            const bw = x2 - x1;
+            const bh = y2 - y1;
 
-        // 内圈
-        ctx.beginPath();
-        ctx.arc(px, py, 8, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0, 245, 212, 0.5)';
-        ctx.fill();
+            ctx.save();
 
-        // 面部关键点
-        if (G.faceRaw) {
-            const keyPts = [1, 33, 263, 61, 291, 13];
-            for (const idx of keyPts) {
-                const pt = G.faceRaw[idx];
-                const ptx = (1 - pt.x) * canvas.width;
-                const pty = pt.y * canvas.height;
-                ctx.beginPath();
-                ctx.arc(ptx, pty, 2.5, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(0, 245, 212, 0.6)';
-                ctx.fill();
-            }
+            // 角落标记（不是完整方框，更有科技感）
+            const cornerLen = Math.min(bw, bh) * 0.2;
+            ctx.strokeStyle = 'rgba(0, 245, 212, 0.6)';
+            ctx.lineWidth = 2.5;
+            ctx.lineCap = 'round';
+
+            // 左上角
+            ctx.beginPath();
+            ctx.moveTo(x1, y1 + cornerLen);
+            ctx.lineTo(x1, y1);
+            ctx.lineTo(x1 + cornerLen, y1);
+            ctx.stroke();
+
+            // 右上角
+            ctx.beginPath();
+            ctx.moveTo(x2 - cornerLen, y1);
+            ctx.lineTo(x2, y1);
+            ctx.lineTo(x2, y1 + cornerLen);
+            ctx.stroke();
+
+            // 左下角
+            ctx.beginPath();
+            ctx.moveTo(x1, y2 - cornerLen);
+            ctx.lineTo(x1, y2);
+            ctx.lineTo(x1 + cornerLen, y2);
+            ctx.stroke();
+
+            // 右下角
+            ctx.beginPath();
+            ctx.moveTo(x2 - cornerLen, y2);
+            ctx.lineTo(x2, y2);
+            ctx.lineTo(x2, y2 - cornerLen);
+            ctx.stroke();
+
+            // 中心点
+            const cx = (x1 + x2) / 2;
+            const cy = (y1 + y2) / 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0, 245, 212, 0.5)';
+            ctx.fill();
+
+            // 十字线
+            ctx.beginPath();
+            ctx.moveTo(cx - 12, cy); ctx.lineTo(cx + 12, cy);
+            ctx.moveTo(cx, cy - 12); ctx.lineTo(cx, cy + 12);
+            ctx.strokeStyle = 'rgba(0, 245, 212, 0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            ctx.restore();
         }
-
-        ctx.restore();
     }
 
     // =====================================================
@@ -1150,7 +1060,6 @@
             ctx.translate(px, py);
             ctx.rotate(item.rotation);
 
-            // 光晕
             if (item.type.emoji === '💎') {
                 ctx.shadowColor = 'rgba(100, 200, 255, 0.7)';
                 ctx.shadowBlur = 20;
@@ -1169,14 +1078,10 @@
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(item.type.emoji, 0, 0);
-
             ctx.restore();
         }
     }
 
-    // =====================================================
-    //  绘制：粒子
-    // =====================================================
     function drawParticles() {
         for (const p of G.particles) {
             if (!p.alive) continue;
@@ -1190,9 +1095,6 @@
         }
     }
 
-    // =====================================================
-    //  绘制：浮动文字
-    // =====================================================
     function drawFloatingTexts() {
         for (const ft of G.floatingTexts) {
             if (!ft.alive) continue;
@@ -1208,16 +1110,12 @@
         }
     }
 
-    // =====================================================
-    //  绘制：未检测到人脸
-    // =====================================================
     function drawFaceNotFound() {
         if (G.faceDetected || !G.running) return;
         ctx.save();
         ctx.font = '500 15px -apple-system, system-ui, sans-serif';
         ctx.textAlign = 'center';
 
-        // 背景胶囊
         const text = '未检测到人脸 — 请面对摄像头';
         const tw = ctx.measureText(text).width;
         const cx = canvas.width / 2;
@@ -1225,13 +1123,8 @@
 
         ctx.fillStyle = 'rgba(255, 107, 107, 0.15)';
         const px = 20, py = 10;
-        const rr = 10;
-        const rx = cx - tw / 2 - px;
-        const ry = cy - 14;
-        const rw = tw + px * 2;
-        const rh = 36;
         ctx.beginPath();
-        ctx.roundRect(rx, ry, rw, rh, rr);
+        ctx.roundRect(cx - tw / 2 - px, cy - 14, tw + px * 2, 36, 10);
         ctx.fill();
 
         ctx.fillStyle = 'rgba(255, 150, 150, 0.9)';
@@ -1245,9 +1138,12 @@
     function update(dt) {
         if (!G.running || G.paused) return;
 
+        // 异步人脸检测（不阻塞渲染）
+        detectFace();
+
         // 平滑跟随
         if (G.faceDetected) {
-            G.basketX += (G.faceX - G.basketX) * 0.15;
+            G.basketX += (G.faceX - G.basketX) * 0.25;
         }
 
         // 生成
@@ -1264,7 +1160,6 @@
 
             if (checkCollision(item)) {
                 item.alive = false;
-
                 if (item.type.points === -1) {
                     G.lives--;
                     G.combo = 0;
@@ -1282,7 +1177,6 @@
                     const pts = Math.round(item.type.points * mult);
                     G.score += pts;
                     G.caught++;
-
                     const clr = item.type.points >= 30 ? '#ffd93d' : '#00f5d4';
                     spawnParticles(item.x * canvas.width, item.y * canvas.height, clr, 8);
                     const suffix = G.combo >= 5 ? ` (x${mult})` : '';
@@ -1314,7 +1208,6 @@
             if (p.life <= 0) p.alive = false;
         }
 
-        // 更新浮动文字
         for (const ft of G.floatingTexts) {
             if (!ft.alive) continue;
             ft.y += ft.vy;
@@ -1322,7 +1215,6 @@
             if (ft.life <= 0) ft.alive = false;
         }
 
-        // 连击横幅计时
         if (G.comboBannerTimer > 0) {
             G.comboBannerTimer -= dt;
             if (G.comboBannerTimer <= 0) {
@@ -1331,7 +1223,7 @@
             }
         }
 
-        // 定期清理死亡对象
+        // 定期清理
         if (Math.random() < 0.02) {
             G.items = G.items.filter(i => i.alive);
             G.particles = G.particles.filter(p => p.alive);
@@ -1350,8 +1242,6 @@
         G.lastTime = timestamp;
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // 暗色遮罩
         ctx.fillStyle = G.paused ? 'rgba(10, 10, 26, 0.5)' : 'rgba(10, 10, 26, 0.2)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -1372,23 +1262,12 @@
     //  游戏流程
     // =====================================================
     function resetGame() {
-        G.score = 0;
-        G.lives = MAX_LIVES;
-        G.combo = 0;
-        G.maxCombo = 0;
-        G.caught = 0;
-        G.missed = 0;
-        G.level = 1;
-        G.items = [];
-        G.particles = [];
-        G.floatingTexts = [];
-        G.spawnInterval = 1500;
-        G.fallSpeed = 1.5;
-        G.lastSpawn = 0;
-        G.basketX = 0.5;
-        G.lastMilestone = 0;
-        G.shakeTime = 0;
-        G.comboBannerTimer = 0;
+        G.score = 0; G.lives = MAX_LIVES; G.combo = 0;
+        G.maxCombo = 0; G.caught = 0; G.missed = 0; G.level = 1;
+        G.items = []; G.particles = []; G.floatingTexts = [];
+        G.spawnInterval = 1500; G.fallSpeed = 1.5;
+        G.lastSpawn = 0; G.basketX = 0.5;
+        G.lastMilestone = 0; G.shakeTime = 0; G.comboBannerTimer = 0;
         renderHearts();
     }
 
@@ -1410,26 +1289,22 @@
     function gameOver() {
         G.running = false;
         pauseBtn.style.display = 'none';
-
         const isNewBest = G.score > G.bestScore;
         if (isNewBest) {
             G.bestScore = G.score;
             localStorage.setItem(STORAGE_KEY, G.bestScore);
         }
-
         document.getElementById('final-score').textContent = G.score;
         document.getElementById('stat-caught').textContent = G.caught;
         document.getElementById('stat-missed').textContent = G.missed;
         document.getElementById('stat-max-combo').textContent = G.maxCombo;
         document.getElementById('stat-level').textContent = G.level;
         document.getElementById('new-best-tag').className = 'go-new-best' + (isNewBest ? ' show' : '');
-
         gameoverEl.style.display = 'flex';
     }
 
     function goHome() {
-        G.running = false;
-        G.paused = false;
+        G.running = false; G.paused = false;
         pauseOvl.style.display = 'none';
         gameoverEl.style.display = 'none';
         pauseBtn.style.display = 'none';
@@ -1442,7 +1317,7 @@
     // =====================================================
     document.getElementById('start-btn').addEventListener('click', async () => {
         startScreen.style.display = 'none';
-        const ok = await initFaceMesh();
+        const ok = await initFaceDetection();
         if (ok) {
             startGame();
             requestAnimationFrame(gameLoop);
@@ -1455,16 +1330,12 @@
     });
 
     document.getElementById('home-btn').addEventListener('click', goHome);
-
     pauseBtn.addEventListener('click', pauseGame);
     document.getElementById('resume-btn').addEventListener('click', pauseGame);
     document.getElementById('quit-btn').addEventListener('click', goHome);
 
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            if (G.running) pauseGame();
-            return;
-        }
+        if (e.key === 'Escape') { if (G.running) pauseGame(); return; }
         if (!G.running || G.paused) return;
         if (e.key === 'ArrowLeft' || e.key === 'a') {
             G.basketX = Math.max(0.05, G.basketX - 0.03);
