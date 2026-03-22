@@ -577,12 +577,12 @@
             <div class="inst-card">
                 <span class="ic-icon">🎥</span>
                 <div class="ic-title">头部追踪</div>
-                <div class="ic-desc">纯浏览器运动检测，零外部 AI 库</div>
+                <div class="ic-desc">肤色检测算法，不动也能追踪</div>
             </div>
             <div class="inst-card">
                 <span class="ic-icon">🧺</span>
                 <div class="ic-title">头部控制</div>
-                <div class="ic-desc">移动头部来控制篮子左右移动</div>
+                <div class="ic-desc">移动头部控制篮子左右移动</div>
             </div>
             <div class="inst-card">
                 <span class="ic-icon">🍉</span>
@@ -663,7 +663,6 @@
         headX: 0.5,
         faceDetected: false,
         // 追踪内部状态
-        prevFrame: null,
         motionCenterX: 0.5,
         motionWeight: 0,  // 运动量的权重，用于判断是否有人在
         // 游戏对象
@@ -757,10 +756,12 @@
     }
 
     // =====================================================
-    //  摄像头 + 运动检测头部追踪（零外部依赖）
+    //  头部追踪：肤色检测 + 竖直投影法（零外部依赖）
+    //  原理：在画面上部区域找肤色像素，统计 X 方向投影，取峰值作为头部中心
+    //  优势：无需运动、不受光照影响、持续追踪
     // =====================================================
-    const ANALYSIS_W = 160;  // 低分辨率分析，提升性能
-    const ANALYSIS_H = 120;
+    const ANALYSIS_W = 80;   // 超低分辨率，够用且快
+    const ANALYSIS_H = 60;
 
     async function initCamera() {
         loadingEl.style.display = 'flex';
@@ -780,15 +781,12 @@
             aCanvas.width = ANALYSIS_W;
             aCanvas.height = ANALYSIS_H;
 
-            // 预热：等几帧让摄像头稳定
+            // 预热：等摄像头稳定
             loadBar.style.width = '60%';
             loadingText.textContent = '正在校准头部追踪…';
-            for (let i = 0; i < 10; i++) {
+            for (let i = 0; i < 15; i++) {
                 await new Promise(r => requestAnimationFrame(r));
             }
-            // 抓一帧作为背景参考
-            aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
-            G.prevFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
 
             loadBar.style.width = '100%';
             loadingText.textContent = '准备就绪！';
@@ -813,70 +811,94 @@
         }
     }
 
-    // 运动检测：通过帧差法找到运动区域的质心
-    function detectMotion() {
-        if (!G.running || G.paused || !video.videoWidth || !G.prevFrame) return;
+    // 肤色检测核心函数
+    function detectHeadPosition() {
+        if (!G.running || G.paused || !video.videoWidth) return;
 
-        // 降频：每 3 帧分析一次
         const now = performance.now();
-        if (!detectMotion._last || now - detectMotion._last < 50) return;
-        detectMotion._last = now;
+        if (!detectHeadPosition._last || now - detectHeadPosition._last < 60) return;
+        detectHeadPosition._last = now;
 
         // 绘制当前帧到低分辨率画布
         aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
-        const currFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
-        const prev = G.prevFrame.data;
-        const curr = currFrame.data;
+        const imageData = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
+        const data = imageData.data;
 
-        // 帧差法：计算每个像素的运动量
-        let totalMotion = 0;
-        let weightedX = 0;
-        let weightSum = 0;
+        // X 方向投影直方图
+        const histogram = new Float32Array(ANALYSIS_W);
 
-        // 感兴趣区域：画面中间偏上（头部通常在这个区域）
-        const regionTop = Math.floor(ANALYSIS_H * 0.1);
-        const regionBottom = Math.floor(ANALYSIS_H * 0.65);
-        const regionLeft = Math.floor(ANALYSIS_W * 0.1);
-        const regionRight = Math.floor(ANALYSIS_W * 0.9);
-        const threshold = 30; // 像素差异阈值
+        // 感兴趣区域：画面上部 60%（头部区域）
+        const regionTop = 1;
+        const regionBottom = Math.floor(ANALYSIS_H * 0.6);
 
-        for (let y = regionTop; y < regionBottom; y += 2) {  // 步长 2，性能优化
-            for (let x = regionLeft; x < regionRight; x += 2) {
+        let skinPixels = 0;
+
+        for (let y = regionTop; y < regionBottom; y++) {
+            for (let x = 0; x < ANALYSIS_W; x++) {
                 const idx = (y * ANALYSIS_W + x) * 4;
-                const dr = Math.abs(curr[idx] - prev[idx]);
-                const dg = Math.abs(curr[idx + 1] - prev[idx + 1]);
-                const db = Math.abs(curr[idx + 2] - prev[idx + 2]);
-                const diff = (dr + dg + db) / 3;
+                const r = data[idx];
+                const g = data[idx + 1];
+                const b = data[idx + 2];
 
-                if (diff > threshold) {
-                    totalMotion += diff;
-                    weightedX += x * diff;
-                    weightSum += diff;
+                // 多重肤色检测条件（覆盖不同肤色 + 光照）
+                // 条件1: RGB 规则 (适用于大多数肤色)
+                const isSkinRGB = r > 80 && g > 30 && b > 15 &&
+                                  r > g && r > b &&
+                                  (r - g) > 12 &&
+                                  Math.abs(r - g) < 130;
+
+                // 条件2: YCbCr 色彩空间（更鲁棒）
+                const cb = b - ((r + g) >> 1) + 128;
+                const cr = r - ((g + b) >> 1) + 128;
+                const isSkinYCbCr = cr > 130 && cr < 180 && cb > 75 && cb < 135;
+
+                if (isSkinRGB || isSkinYCbCr) {
+                    histogram[x] += 1;
+                    skinPixels++;
                 }
             }
         }
 
-        // 更新前一帧
-        G.prevFrame = currFrame;
+        // 需要足够多的肤色像素才算检测到
+        const minSkinPixels = ANALYSIS_W * (regionBottom - regionTop) * 0.05; // 5%
 
-        if (weightSum > 500) {  // 有足够运动量
-            const motionX = weightedX / weightSum / ANALYSIS_W;
-            // 镜像翻转 + 映射到 0~1（加一些放大让小幅度偏头也有效果）
-            G.motionCenterX += (1 - motionX - G.motionCenterX) * 0.3;
-            G.motionWeight = Math.min(1, G.motionWeight + 0.15);
+        if (skinPixels > minSkinPixels) {
+            // 找直方图最大值（X 投影的峰值 = 头部水平中心）
+            let maxVal = 0;
+            let peakX = ANALYSIS_W / 2;
 
-            // 映射：将 0.15~0.85 的检测范围映射到 0~1
-            G.headX = Math.max(0, Math.min(1, (G.motionCenterX - 0.15) / 0.7));
+            // 高斯平滑（简单版：3像素窗口）
+            const smoothed = new Float32Array(ANALYSIS_W);
+            for (let x = 1; x < ANALYSIS_W - 1; x++) {
+                smoothed[x] = histogram[x - 1] * 0.25 + histogram[x] * 0.5 + histogram[x + 1] * 0.25;
+            }
+            smoothed[0] = histogram[0] * 0.6 + histogram[1] * 0.4;
+            smoothed[ANALYSIS_W - 1] = histogram[ANALYSIS_W - 2] * 0.4 + histogram[ANALYSIS_W - 1] * 0.6;
+
+            for (let x = 0; x < ANALYSIS_W; x++) {
+                if (smoothed[x] > maxVal) {
+                    maxVal = smoothed[x];
+                    peakX = x;
+                }
+            }
+
+            // 归一化到 0~1 并镜像翻转（视频是镜像的）
+            const rawX = 1 - (peakX / ANALYSIS_W);
+
+            // 稳定追踪：加权平均
+            G.motionCenterX = G.motionCenterX * 0.4 + rawX * 0.6;
+
+            // 映射到篮子范围（留一点边距）
+            G.headX = Math.max(0.02, Math.min(0.98, G.motionCenterX));
             G.faceDetected = true;
+            G.motionWeight = Math.min(1, G.motionWeight + 0.2);
         } else {
-            G.motionWeight = Math.max(0, G.motionWeight - 0.05);
-            if (G.motionWeight < 0.1) {
+            // 肤色像素不足，逐渐降低检测置信度
+            G.motionWeight = Math.max(0, G.motionWeight - 0.03);
+            if (G.motionWeight < 0.05) {
                 G.faceDetected = false;
             }
         }
-
-        // 缓慢衰减运动中心（防止跳变）
-        G.motionCenterX = Math.max(0, Math.min(1, G.motionCenterX));
     }
 
     // =====================================================
@@ -1203,7 +1225,7 @@
         ctx.font = '500 15px -apple-system, system-ui, sans-serif';
         ctx.textAlign = 'center';
 
-        const text = '移动头部来控制篮子（也可用鼠标/键盘）';
+        const text = '请面对摄像头（也可用鼠标/键盘控制）';
         const tw = ctx.measureText(text).width;
         const cx = canvas.width / 2;
         const cy = canvas.height / 2;
@@ -1225,8 +1247,8 @@
     function update(dt) {
         if (!G.running || G.paused) return;
 
-        // 运动检测头部追踪
-        detectMotion();
+        // 肤色检测头部追踪
+        detectHeadPosition();
 
         // 平滑跟随
         if (G.faceDetected) {
@@ -1364,11 +1386,6 @@
         G.running = true;
         G.paused = false;
         pauseBtn.style.display = 'flex';
-        // 重置参考帧
-        if (aCanvas.width > 0 && video.videoWidth > 0) {
-            aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
-            G.prevFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
-        }
         updateHUD();
     }
 
@@ -1377,11 +1394,6 @@
         G.paused = !G.paused;
         pauseOvl.style.display = G.paused ? 'flex' : 'none';
         pauseBtn.textContent = G.paused ? '▶' : '❚❚';
-        // 暂停/恢复时重置参考帧，避免暂停期间的变化被当作运动
-        if (!G.paused && video.videoWidth > 0) {
-            aCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
-            G.prevFrame = aCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
-        }
     }
 
     function gameOver() {
