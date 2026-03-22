@@ -1,0 +1,1490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenClaw 人机交互 - 头部接水果</title>
+    <!-- MediaPipe CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <style>
+        :root {
+            --accent: #00f5d4;
+            --accent-2: #00bbf9;
+            --danger: #ff6b6b;
+            --gold: #ffd93d;
+            --surface: rgba(10, 10, 30, 0.85);
+            --surface-light: rgba(255, 255, 255, 0.06);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0a0a1a;
+            color: #fff;
+            font-family: -apple-system, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        /* ========== 视频背景 ========== */
+        #video {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 1;
+        }
+
+        /* ========== 游戏画布 ========== */
+        #game-canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10;
+        }
+
+        /* ========== 顶部 HUD ========== */
+        #hud {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 16px 28px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .hud-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 90px;
+        }
+
+        .hud-label {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2.5px;
+            color: rgba(255,255,255,0.45);
+            margin-bottom: 2px;
+        }
+
+        .hud-value {
+            font-size: 36px;
+            font-weight: 800;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+            letter-spacing: -1px;
+        }
+
+        .hud-value.score-val {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hud-value.combo-val {
+            background: linear-gradient(135deg, var(--gold), #ff8a00);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 28px;
+            transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .hud-value.combo-val.pulse {
+            transform: scale(1.3);
+        }
+
+        /* 生命值 - 心形容器 */
+        .hearts-row {
+            display: flex;
+            gap: 6px;
+            font-size: 22px;
+        }
+
+        .heart {
+            display: inline-block;
+            transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s;
+        }
+
+        .heart.lost {
+            opacity: 0.15;
+            transform: scale(0.7);
+            filter: grayscale(1);
+        }
+
+        .heart.shake {
+            animation: heartShake 0.4s ease;
+        }
+
+        @keyframes heartShake {
+            0%, 100% { transform: scale(1); }
+            20% { transform: scale(1.4) rotate(-10deg); }
+            40% { transform: scale(0.8) rotate(10deg); }
+            60% { transform: scale(1.2) rotate(-5deg); }
+        }
+
+        /* 高分 */
+        .hud-best {
+            font-size: 11px;
+            color: rgba(255,255,255,0.3);
+            font-weight: 500;
+            margin-top: 4px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ========== 暂停按钮 ========== */
+        #pause-btn {
+            position: fixed;
+            top: 16px;
+            right: 28px;
+            z-index: 110;
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            color: rgba(255,255,255,0.6);
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s, color 0.2s;
+            pointer-events: auto;
+        }
+
+        #pause-btn:hover {
+            background: rgba(255,255,255,0.12);
+            color: #fff;
+        }
+
+        /* ========== 暂停覆盖 ========== */
+        #pause-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 180;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(10, 10, 26, 0.8);
+            backdrop-filter: blur(12px);
+        }
+
+        #pause-overlay h2 {
+            font-size: 40px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 12px;
+            color: #fff;
+        }
+
+        #pause-overlay .hint {
+            font-size: 14px;
+            color: rgba(255,255,255,0.5);
+            margin-bottom: 36px;
+        }
+
+        .pause-btn {
+            padding: 12px 36px;
+            font-size: 15px;
+            font-weight: 700;
+            border: none;
+            border-radius: 14px;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+            margin: 0 8px;
+        }
+
+        .pause-btn.primary {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #0a0a1a;
+        }
+
+        .pause-btn.secondary {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+
+        .pause-btn:hover {
+            transform: scale(1.04);
+        }
+
+        /* ========== 难度指示器 ========== */
+        #level-bar {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            pointer-events: none;
+        }
+
+        .lvl-pip {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.15);
+            transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .lvl-pip.on {
+            background: var(--accent);
+            box-shadow: 0 0 8px rgba(0,245,212,0.5);
+            transform: scale(1.2);
+        }
+
+        #level-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: rgba(255,255,255,0.4);
+            margin-left: 6px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        /* ========== Toast ========== */
+        #toast {
+            position: fixed;
+            top: 72px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-16px);
+            padding: 8px 20px;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            z-index: 150;
+            opacity: 0;
+            transition: opacity 0.25s, transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none;
+            backdrop-filter: blur(8px);
+        }
+
+        #toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        #toast.success { background: rgba(0,245,212,0.85); color: #0a0a1a; }
+        #toast.warning { background: rgba(255,107,107,0.85); color: #fff; }
+        #toast.info    { background: rgba(0,187,249,0.85); color: #fff; }
+        #toast.milestone { background: rgba(255,217,61,0.9); color: #1a1a2e; }
+
+        /* ========== 连击横幅 ========== */
+        #combo-banner {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0.5);
+            z-index: 140;
+            font-size: 48px;
+            font-weight: 900;
+            letter-spacing: -2px;
+            opacity: 0;
+            pointer-events: none;
+            transition: none;
+            text-shadow: 0 0 40px rgba(255,217,61,0.5);
+        }
+
+        /* ========== 屏幕震动 ========== */
+        .screen-shake {
+            animation: shake 0.35s ease-out;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translate(0, 0); }
+            15% { transform: translate(-6px, 4px); }
+            30% { transform: translate(5px, -3px); }
+            45% { transform: translate(-4px, 2px); }
+            60% { transform: translate(3px, -2px); }
+            75% { transform: translate(-2px, 1px); }
+        }
+
+        /* ========== 启动界面 ========== */
+        #start-screen {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #0a0a1a;
+        }
+
+        /* 启动界面背景动画 */
+        #start-screen::before {
+            content: '';
+            position: absolute;
+            top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: radial-gradient(ellipse at 30% 50%, rgba(0,245,212,0.08) 0%, transparent 50%),
+                        radial-gradient(ellipse at 70% 50%, rgba(0,187,249,0.06) 0%, transparent 50%);
+            animation: bgShift 8s ease-in-out infinite alternate;
+        }
+
+        @keyframes bgShift {
+            0% { transform: translate(0, 0) rotate(0deg); }
+            100% { transform: translate(2%, 1%) rotate(3deg); }
+        }
+
+        #start-screen > * { position: relative; z-index: 1; }
+
+        #start-screen h1 {
+            font-size: 52px;
+            font-weight: 900;
+            letter-spacing: -2px;
+            margin-bottom: 8px;
+            line-height: 1.1;
+        }
+
+        #start-screen h1 .title-main {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        #start-screen .subtitle {
+            font-size: 16px;
+            color: rgba(255,255,255,0.4);
+            margin-bottom: 52px;
+            font-weight: 400;
+        }
+
+        .instructions-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            max-width: 520px;
+            margin-bottom: 44px;
+            width: 90%;
+        }
+
+        .inst-card {
+            background: var(--surface-light);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 16px;
+            padding: 20px 16px;
+            text-align: center;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+
+        .inst-card:hover {
+            border-color: rgba(0,245,212,0.2);
+            transform: translateY(-2px);
+        }
+
+        .inst-card .ic-icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+            display: block;
+        }
+
+        .inst-card .ic-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: rgba(255,255,255,0.8);
+            margin-bottom: 4px;
+        }
+
+        .inst-card .ic-desc {
+            font-size: 11px;
+            color: rgba(255,255,255,0.35);
+            line-height: 1.4;
+        }
+
+        .best-score-line {
+            font-size: 12px;
+            color: rgba(255,255,255,0.3);
+            margin-bottom: 20px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .best-score-line span {
+            color: var(--gold);
+            font-weight: 700;
+        }
+
+        #start-btn {
+            padding: 14px 52px;
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            color: #0a0a1a;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            border: none;
+            border-radius: 16px;
+            cursor: pointer;
+            transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
+        }
+
+        #start-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 50px rgba(0,245,212,0.3);
+        }
+
+        #start-btn:active {
+            transform: scale(0.98);
+        }
+
+        /* ========== 加载 ========== */
+        #loading {
+            position: fixed;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 300;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+        }
+
+        #loading .spinner {
+            width: 44px; height: 44px;
+            border: 3px solid rgba(255,255,255,0.08);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #loading .load-text {
+            font-size: 13px;
+            color: rgba(255,255,255,0.5);
+            font-weight: 500;
+        }
+
+        .load-progress {
+            width: 200px;
+            height: 3px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+
+        .load-progress-bar {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 2px;
+            width: 0%;
+            transition: width 0.4s ease;
+        }
+
+        /* ========== 游戏结束 ========== */
+        #gameover-screen {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 200;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(10, 10, 26, 0.92);
+            backdrop-filter: blur(16px);
+        }
+
+        #gameover-screen h2 {
+            font-size: 20px;
+            font-weight: 600;
+            color: rgba(255,255,255,0.5);
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .go-score {
+            font-size: 72px;
+            font-weight: 900;
+            letter-spacing: -3px;
+            line-height: 1;
+            background: linear-gradient(135deg, var(--gold), #ff8a00);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 6px;
+        }
+
+        .go-new-best {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--gold);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 32px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .go-new-best.show { opacity: 1; }
+
+        .go-stats {
+            display: flex;
+            gap: 32px;
+            margin-bottom: 40px;
+        }
+
+        .go-stat {
+            text-align: center;
+        }
+
+        .go-stat .gs-val {
+            font-size: 22px;
+            font-weight: 800;
+            font-variant-numeric: tabular-nums;
+            color: var(--accent);
+        }
+
+        .go-stat .gs-lbl {
+            font-size: 10px;
+            color: rgba(255,255,255,0.35);
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        .go-btns {
+            display: flex;
+            gap: 12px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 视频背景 -->
+    <video id="video" autoplay playsinline></video>
+
+    <!-- 游戏画布 -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- HUD -->
+    <div id="hud">
+        <div class="hud-group">
+            <span class="hud-label">得分</span>
+            <span class="hud-value score-val" id="score-display">0</span>
+            <span class="hud-best" id="best-display"></span>
+        </div>
+        <div class="hud-group">
+            <span class="hud-label">连击</span>
+            <span class="hud-value combo-val" id="combo-display">0</span>
+        </div>
+        <div class="hud-group">
+            <span class="hud-label">生命</span>
+            <div class="hearts-row" id="hearts-container"></div>
+        </div>
+    </div>
+
+    <!-- 暂停按钮 -->
+    <button id="pause-btn" title="暂停 (ESC)">❚❚</button>
+
+    <!-- 暂停覆盖 -->
+    <div id="pause-overlay">
+        <h2>已暂停</h2>
+        <p class="hint">按 ESC 或点击继续</p>
+        <div>
+            <button class="pause-btn primary" id="resume-btn">继续游戏</button>
+            <button class="pause-btn secondary" id="quit-btn">返回首页</button>
+        </div>
+    </div>
+
+    <!-- 难度 -->
+    <div id="level-bar">
+        <div class="lvl-pip on" id="pip-0"></div>
+        <div class="lvl-pip" id="pip-1"></div>
+        <div class="lvl-pip" id="pip-2"></div>
+        <div class="lvl-pip" id="pip-3"></div>
+        <div class="lvl-pip" id="pip-4"></div>
+        <span id="level-label">Lv.1</span>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast"></div>
+
+    <!-- 连击横幅 -->
+    <div id="combo-banner"></div>
+
+    <!-- 启动界面 -->
+    <div id="start-screen">
+        <h1><span class="title-main">头部接水果</span></h1>
+        <p class="subtitle">用你的脸来玩 — 左右移动头部接住掉落的水果</p>
+        <div class="instructions-grid">
+            <div class="inst-card">
+                <span class="ic-icon">🎥</span>
+                <div class="ic-title">AI 面部追踪</div>
+                <div class="ic-desc">实时检测 468 个面部关键点</div>
+            </div>
+            <div class="inst-card">
+                <span class="ic-icon">🧺</span>
+                <div class="ic-title">头部控制</div>
+                <div class="ic-desc">左右移动头部来控制篮子</div>
+            </div>
+            <div class="inst-card">
+                <span class="ic-icon">🍉</span>
+                <div class="ic-title">接水果得分</div>
+                <div class="ic-desc">连击越多倍率越高，最高 x3.0</div>
+            </div>
+            <div class="inst-card">
+                <span class="ic-icon">💣</span>
+                <div class="ic-title">躲避炸弹</div>
+                <div class="ic-desc">5 条命，碰到炸弹扣一命</div>
+            </div>
+        </div>
+        <div class="best-score-line" id="start-best"></div>
+        <button id="start-btn">开始游戏</button>
+    </div>
+
+    <!-- 加载 -->
+    <div id="loading">
+        <div class="spinner"></div>
+        <div class="load-text" id="loading-text">正在加载人脸检测模型…</div>
+        <div class="load-progress"><div class="load-progress-bar" id="load-bar"></div></div>
+    </div>
+
+    <!-- 游戏结束 -->
+    <div id="gameover-screen">
+        <h2>游戏结束</h2>
+        <div class="go-score" id="final-score">0</div>
+        <div class="go-new-best" id="new-best-tag">新纪录！</div>
+        <div class="go-stats">
+            <div class="go-stat">
+                <div class="gs-val" id="stat-caught">0</div>
+                <div class="gs-lbl">接住</div>
+            </div>
+            <div class="go-stat">
+                <div class="gs-val" id="stat-missed">0</div>
+                <div class="gs-lbl">漏掉</div>
+            </div>
+            <div class="go-stat">
+                <div class="gs-val" id="stat-max-combo">0</div>
+                <div class="gs-lbl">最高连击</div>
+            </div>
+            <div class="go-stat">
+                <div class="gs-val" id="stat-level">1</div>
+                <div class="gs-lbl">等级</div>
+            </div>
+        </div>
+        <div class="go-btns">
+            <button class="pause-btn primary" id="restart-btn">再来一局</button>
+            <button class="pause-btn secondary" id="home-btn">返回首页</button>
+        </div>
+    </div>
+
+    <script>
+    // =====================================================
+    //  常量
+    // =====================================================
+    const MAX_LIVES = 5;
+    const MAX_LEVEL = 5;
+    const STORAGE_KEY = 'openclaw_best_score';
+    const MILESTONES = [50, 100, 200, 350, 500, 750, 1000];
+
+    // =====================================================
+    //  全局游戏状态
+    // =====================================================
+    const G = {
+        running: false,
+        paused: false,
+        score: 0,
+        lives: MAX_LIVES,
+        combo: 0,
+        maxCombo: 0,
+        caught: 0,
+        missed: 0,
+        level: 1,
+        bestScore: parseInt(localStorage.getItem(STORAGE_KEY)) || 0,
+        // 人脸追踪
+        faceX: 0.5,
+        faceY: 0.5,
+        faceDetected: false,
+        faceRaw: null,
+        // 游戏对象（使用标记删除，避免 splice）
+        items: [],
+        particles: [],
+        floatingTexts: [],
+        basketX: 0.5,
+        basketWidth: 130,
+        // 难度
+        spawnInterval: 1500,
+        fallSpeed: 1.5,
+        lastSpawn: 0,
+        // 时间
+        lastTime: 0,
+        lastMilestone: 0,
+        // 屏幕震动
+        shakeTime: 0,
+        // 连击横幅
+        comboBannerTimer: 0,
+    };
+
+    // =====================================================
+    //  DOM 引用
+    // =====================================================
+    const video       = document.getElementById('video');
+    const canvas      = document.getElementById('game-canvas');
+    const ctx         = canvas.getContext('2d');
+    const scoreEl     = document.getElementById('score-display');
+    const comboEl     = document.getElementById('combo-display');
+    const bestEl      = document.getElementById('best-display');
+    const heartsEl    = document.getElementById('hearts-container');
+    const pauseBtn    = document.getElementById('pause-btn');
+    const pauseOvl    = document.getElementById('pause-overlay');
+    const startScreen = document.getElementById('start-screen');
+    const loadingEl   = document.getElementById('loading');
+    const loadingText = document.getElementById('loading-text');
+    const loadBar     = document.getElementById('load-bar');
+    const gameoverEl  = document.getElementById('gameover-screen');
+    const toastEl     = document.getElementById('toast');
+    const comboBanner = document.getElementById('combo-banner');
+    const startBestEl = document.getElementById('start-best');
+
+    // =====================================================
+    //  Canvas 尺寸
+    // =====================================================
+    function resizeCanvas() {
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // =====================================================
+    //  Toast 系统
+    // =====================================================
+    let toastTimer = null;
+    function showToast(msg, type = 'info', duration = 1500) {
+        toastEl.textContent = msg;
+        toastEl.className = type + ' show';
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { toastEl.className = type; }, duration);
+    }
+
+    // =====================================================
+    //  连击横幅
+    // =====================================================
+    const COMBO_MILESTONES = [5, 10, 15, 20, 30, 50];
+    function showComboBanner(combo) {
+        if (!COMBO_MILESTONES.includes(combo)) return;
+        comboBanner.textContent = `${combo} COMBO!`;
+        comboBanner.style.background = `linear-gradient(135deg, #ffd93d, #ff8a00)`;
+        comboBanner.style.webkitBackgroundClip = 'text';
+        comboBanner.style.webkitTextFillColor = 'transparent';
+        comboBanner.style.opacity = '1';
+        comboBanner.style.transform = 'translate(-50%, -50%) scale(1)';
+        G.comboBannerTimer = 1.2;
+    }
+
+    // =====================================================
+    //  屏幕震动
+    // =====================================================
+    function triggerShake() {
+        G.shakeTime = 0.35;
+        document.body.classList.add('screen-shake');
+        setTimeout(() => document.body.classList.remove('screen-shake'), 350);
+    }
+
+    // =====================================================
+    //  MediaPipe Face Mesh
+    // =====================================================
+    let faceMesh = null;
+    let cameraInstance = null;
+
+    async function initFaceMesh() {
+        loadingEl.style.display = 'flex';
+        loadingText.textContent = '正在加载人脸检测模型…';
+        loadBar.style.width = '10%';
+
+        try {
+            faceMesh = new FaceMesh({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+            });
+
+            loadBar.style.width = '30%';
+
+            faceMesh.setOptions({
+                maxNumFaces: 1,
+                refineLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5,
+            });
+
+            faceMesh.onResults(onFaceResults);
+
+            loadBar.style.width = '60%';
+            loadingText.textContent = '正在启动摄像头…';
+
+            cameraInstance = new Camera(video, {
+                onFrame: async () => {
+                    if (faceMesh) await faceMesh.send({ image: video });
+                },
+                width: 1280,
+                height: 720,
+            });
+
+            await cameraInstance.start();
+            loadBar.style.width = '100%';
+
+            await new Promise(r => setTimeout(r, 300));
+            loadingEl.style.display = 'none';
+            showToast('摄像头就绪，人脸检测已启动', 'success');
+            return true;
+        } catch (err) {
+            console.error('FaceMesh init error:', err);
+            loadingText.textContent = '加载失败 — 请允许摄像头权限后刷新';
+            return false;
+        }
+    }
+
+    function onFaceResults(results) {
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+            const landmarks = results.multiFaceLandmarks[0];
+            const noseTip = landmarks[1];
+            G.faceX = 1 - noseTip.x; // 镜像翻转
+            G.faceY = noseTip.y;
+            G.faceDetected = true;
+            G.faceRaw = landmarks;
+        } else {
+            G.faceDetected = false;
+        }
+    }
+
+    // =====================================================
+    //  水果 & 物品系统
+    // =====================================================
+    const FRUIT_TYPES = [
+        { emoji: '🍉', points: 10,  weight: 30 },
+        { emoji: '🍊', points: 10,  weight: 25 },
+        { emoji: '🍎', points: 10,  weight: 20 },
+        { emoji: '🍇', points: 15,  weight: 12 },
+        { emoji: '🍓', points: 15,  weight: 8  },
+        { emoji: '🍑', points: 20,  weight: 5  },
+        { emoji: '🌟', points: 30,  weight: 4  },
+        { emoji: '💎', points: 50,  weight: 2  },
+        { emoji: '💣', points: -1,  weight: 10 },
+    ];
+
+    function pickFruitType() {
+        const total = FRUIT_TYPES.reduce((s, f) => s + f.weight, 0);
+        let r = Math.random() * total;
+        for (const ft of FRUIT_TYPES) {
+            r -= ft.weight;
+            if (r <= 0) return ft;
+        }
+        return FRUIT_TYPES[0];
+    }
+
+    function spawnItem() {
+        const type = pickFruitType();
+        G.items.push({
+            x: 0.08 + Math.random() * 0.84,
+            y: -0.06,
+            speed: G.fallSpeed * (0.85 + Math.random() * 0.3),
+            type,
+            size: 38 + Math.random() * 14,
+            rotation: Math.random() * Math.PI * 2,
+            rotSpeed: (Math.random() - 0.5) * 3,
+            wobble: Math.random() * Math.PI * 2,
+            wobbleSpeed: 1 + Math.random() * 2,
+            alive: true,
+        });
+    }
+
+    // =====================================================
+    //  粒子系统 (标记删除)
+    // =====================================================
+    function spawnParticles(x, y, color, count = 10) {
+        for (let i = 0; i < count; i++) {
+            const angle = (Math.PI * 2 / count) * i + Math.random() * 0.5;
+            const speed = 2 + Math.random() * 5;
+            G.particles.push({
+                x, y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 3,
+                life: 1,
+                decay: 0.018 + Math.random() * 0.02,
+                size: 3 + Math.random() * 5,
+                color,
+                alive: true,
+            });
+        }
+    }
+
+    // =====================================================
+    //  浮动文字 (标记删除)
+    // =====================================================
+    function spawnFloatingText(x, y, text, color, big = false) {
+        G.floatingTexts.push({
+            x, y, text, color,
+            life: 1,
+            vy: big ? -3 : -2,
+            size: big ? 32 : 22,
+            alive: true,
+        });
+    }
+
+    // =====================================================
+    //  碰撞检测
+    // =====================================================
+    function checkCollision(item) {
+        const bx = G.basketX * canvas.width;
+        const bLeft = bx - G.basketWidth / 2;
+        const bRight = bx + G.basketWidth / 2;
+        const bY = canvas.height - 85;
+
+        const ix = item.x * canvas.width;
+        const iy = item.y * canvas.height;
+        const ir = item.size / 2;
+
+        return iy + ir >= bY - 25 && iy - ir <= bY + 35 &&
+               ix + ir >= bLeft && ix - ir <= bRight;
+    }
+
+    // =====================================================
+    //  HUD 更新
+    // =====================================================
+    function renderHearts() {
+        let html = '';
+        for (let i = 0; i < MAX_LIVES; i++) {
+            const lost = i >= G.lives ? ' lost' : '';
+            html += `<span class="heart${lost}" id="heart-${i}">❤</span>`;
+        }
+        heartsEl.innerHTML = html;
+    }
+
+    function shakeHeart() {
+        const heartEl = document.getElementById(`heart-${G.lives}`);
+        if (heartEl) {
+            heartEl.classList.add('shake', 'lost');
+        }
+    }
+
+    function pulseCombo() {
+        comboEl.classList.add('pulse');
+        setTimeout(() => comboEl.classList.remove('pulse'), 150);
+    }
+
+    function updateHUD() {
+        scoreEl.textContent = G.score;
+        bestEl.textContent = G.bestScore > 0 ? `最佳 ${G.bestScore}` : '';
+        comboEl.textContent = G.combo > 0 ? `x${G.combo}` : '—';
+
+        const lvl = Math.min(MAX_LEVEL, G.level);
+        for (let i = 0; i < MAX_LEVEL; i++) {
+            document.getElementById(`pip-${i}`).className = 'lvl-pip' + (i < lvl ? ' on' : '');
+        }
+        document.getElementById('level-label').textContent = `Lv.${lvl}`;
+    }
+
+    // =====================================================
+    //  难度系统
+    // =====================================================
+    function updateDifficulty() {
+        const newLevel = Math.min(MAX_LEVEL, 1 + Math.floor(G.score / 100));
+        if (newLevel !== G.level) {
+            G.level = newLevel;
+            G.spawnInterval = Math.max(600, 1500 - (G.level - 1) * 160);
+            G.fallSpeed = 1.5 + (G.level - 1) * 0.3;
+            showToast(`难度提升 — 等级 ${G.level}`, 'info');
+        }
+    }
+
+    // =====================================================
+    //  得分里程碑
+    // =====================================================
+    function checkMilestone() {
+        for (const m of MILESTONES) {
+            if (G.score >= m && G.lastMilestone < m) {
+                G.lastMilestone = m;
+                spawnFloatingText(canvas.width / 2, canvas.height / 2 - 40, `${m} 分！`, '#ffd93d', true);
+                showToast(`达成 ${m} 分！`, 'milestone');
+            }
+        }
+    }
+
+    // =====================================================
+    //  绘制：篮子（增强质感）
+    // =====================================================
+    function drawBasket() {
+        const px = G.basketX * canvas.width;
+        const py = canvas.height - 68;
+        const w  = G.basketWidth;
+        const h  = 44;
+
+        ctx.save();
+        ctx.translate(px, py);
+
+        // 底部光晕
+        ctx.shadowColor = 'rgba(0, 245, 212, 0.25)';
+        ctx.shadowBlur = 30;
+
+        // 篮子主体 - 圆角梯形
+        const topW = w / 2;
+        const botW = w / 2 - 14;
+        const r = 6;
+
+        ctx.beginPath();
+        ctx.moveTo(-topW + r, 0);
+        ctx.lineTo(topW - r, 0);
+        ctx.quadraticCurveTo(topW, 0, topW - 4, r);
+        ctx.lineTo(botW - 2, h - r);
+        ctx.quadraticCurveTo(botW - 4, h, botW - 4 - r, h);
+        ctx.lineTo(-botW + 4 + r, h);
+        ctx.quadraticCurveTo(-botW + 4, h, -botW + 2, h - r);
+        ctx.lineTo(-topW + 4, r);
+        ctx.quadraticCurveTo(-topW, 0, -topW + r, 0);
+        ctx.closePath();
+
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        grad.addColorStop(0, 'rgba(0, 245, 212, 0.9)');
+        grad.addColorStop(0.5, 'rgba(0, 200, 230, 0.85)');
+        grad.addColorStop(1, 'rgba(0, 187, 249, 0.8)');
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // 顶部高光
+        ctx.beginPath();
+        ctx.moveTo(-topW + r, 1);
+        ctx.lineTo(topW - r, 1);
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+
+        // 编织纹理
+        for (let i = 1; i <= 3; i++) {
+            const t = i / 4;
+            const ly = h * t;
+            const lw = topW - 4 - (topW - botW) * t;
+            ctx.beginPath();
+            ctx.moveTo(-lw + 4, ly);
+            ctx.lineTo(lw - 4, ly);
+            ctx.strokeStyle = `rgba(255,255,255,${0.12 - t * 0.02})`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        // 内部高光
+        ctx.beginPath();
+        ctx.moveTo(-topW + 10, 4);
+        ctx.lineTo(topW - 10, 4);
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    // =====================================================
+    //  绘制：人脸标记（更精致）
+    // =====================================================
+    function drawFaceMarker() {
+        if (!G.faceDetected) return;
+        const px = G.faceX * canvas.width;
+        const py = G.faceY * canvas.height;
+
+        ctx.save();
+
+        // 外圈 - 虚线
+        ctx.beginPath();
+        ctx.arc(px, py, 35, 0, Math.PI * 2);
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(0, 245, 212, 0.25)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 内圈
+        ctx.beginPath();
+        ctx.arc(px, py, 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0, 245, 212, 0.5)';
+        ctx.fill();
+
+        // 面部关键点
+        if (G.faceRaw) {
+            const keyPts = [1, 33, 263, 61, 291, 13];
+            for (const idx of keyPts) {
+                const pt = G.faceRaw[idx];
+                const ptx = (1 - pt.x) * canvas.width;
+                const pty = pt.y * canvas.height;
+                ctx.beginPath();
+                ctx.arc(ptx, pty, 2.5, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0, 245, 212, 0.6)';
+                ctx.fill();
+            }
+        }
+
+        ctx.restore();
+    }
+
+    // =====================================================
+    //  绘制：掉落物
+    // =====================================================
+    function drawItems(dt) {
+        for (const item of G.items) {
+            if (!item.alive) continue;
+            item.wobble += item.wobbleSpeed * dt;
+            item.rotation += item.rotSpeed * dt;
+
+            const px = item.x * canvas.width + Math.sin(item.wobble) * 12;
+            const py = item.y * canvas.height;
+
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.rotate(item.rotation);
+
+            // 光晕
+            if (item.type.emoji === '💎') {
+                ctx.shadowColor = 'rgba(100, 200, 255, 0.7)';
+                ctx.shadowBlur = 20;
+            } else if (item.type.emoji === '🌟') {
+                ctx.shadowColor = 'rgba(255, 217, 61, 0.6)';
+                ctx.shadowBlur = 16;
+            } else if (item.type.emoji === '💣') {
+                ctx.shadowColor = 'rgba(255, 80, 80, 0.4)';
+                ctx.shadowBlur = 10;
+            } else {
+                ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
+                ctx.shadowBlur = 6;
+            }
+
+            ctx.font = `${item.size}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(item.type.emoji, 0, 0);
+
+            ctx.restore();
+        }
+    }
+
+    // =====================================================
+    //  绘制：粒子
+    // =====================================================
+    function drawParticles() {
+        for (const p of G.particles) {
+            if (!p.alive) continue;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, p.life);
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, Math.max(0.5, p.size * p.life), 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    // =====================================================
+    //  绘制：浮动文字
+    // =====================================================
+    function drawFloatingTexts() {
+        for (const ft of G.floatingTexts) {
+            if (!ft.alive) continue;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, ft.life);
+            ctx.font = `800 ${ft.size}px -apple-system, system-ui, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = ft.color;
+            ctx.shadowColor = 'rgba(0,0,0,0.6)';
+            ctx.shadowBlur = 6;
+            ctx.fillText(ft.text, ft.x, ft.y);
+            ctx.restore();
+        }
+    }
+
+    // =====================================================
+    //  绘制：未检测到人脸
+    // =====================================================
+    function drawFaceNotFound() {
+        if (G.faceDetected || !G.running) return;
+        ctx.save();
+        ctx.font = '500 15px -apple-system, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+
+        // 背景胶囊
+        const text = '未检测到人脸 — 请面对摄像头';
+        const tw = ctx.measureText(text).width;
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+
+        ctx.fillStyle = 'rgba(255, 107, 107, 0.15)';
+        const px = 20, py = 10;
+        const rr = 10;
+        const rx = cx - tw / 2 - px;
+        const ry = cy - 14;
+        const rw = tw + px * 2;
+        const rh = 36;
+        ctx.beginPath();
+        ctx.roundRect(rx, ry, rw, rh, rr);
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(255, 150, 150, 0.9)';
+        ctx.fillText(text, cx, cy + 5);
+        ctx.restore();
+    }
+
+    // =====================================================
+    //  更新逻辑
+    // =====================================================
+    function update(dt) {
+        if (!G.running || G.paused) return;
+
+        // 平滑跟随
+        if (G.faceDetected) {
+            G.basketX += (G.faceX - G.basketX) * 0.15;
+        }
+
+        // 生成
+        G.lastSpawn += dt * 1000;
+        if (G.lastSpawn >= G.spawnInterval) {
+            spawnItem();
+            G.lastSpawn = 0;
+        }
+
+        // 更新物品
+        for (const item of G.items) {
+            if (!item.alive) continue;
+            item.y += item.speed * dt;
+
+            if (checkCollision(item)) {
+                item.alive = false;
+
+                if (item.type.points === -1) {
+                    G.lives--;
+                    G.combo = 0;
+                    shakeHeart();
+                    renderHearts();
+                    spawnParticles(item.x * canvas.width, item.y * canvas.height, '#ff6b6b', 18);
+                    spawnFloatingText(item.x * canvas.width, item.y * canvas.height, '-1', '#ff6b6b');
+                    triggerShake();
+                    showToast('碰到炸弹！', 'warning', 800);
+                    if (G.lives <= 0) { gameOver(); return; }
+                } else {
+                    G.combo++;
+                    if (G.combo > G.maxCombo) G.maxCombo = G.combo;
+                    const mult = 1 + Math.floor(G.combo / 5) * 0.5;
+                    const pts = Math.round(item.type.points * mult);
+                    G.score += pts;
+                    G.caught++;
+
+                    const clr = item.type.points >= 30 ? '#ffd93d' : '#00f5d4';
+                    spawnParticles(item.x * canvas.width, item.y * canvas.height, clr, 8);
+                    const suffix = G.combo >= 5 ? ` (x${mult})` : '';
+                    spawnFloatingText(item.x * canvas.width, item.y * canvas.height, `+${pts}${suffix}`, clr);
+                    pulseCombo();
+                    showComboBanner(G.combo);
+                    checkMilestone();
+                    updateDifficulty();
+                }
+                continue;
+            }
+
+            if (item.y > 1.12) {
+                item.alive = false;
+                if (item.type.points > 0) {
+                    G.missed++;
+                    G.combo = 0;
+                }
+            }
+        }
+
+        // 更新粒子
+        for (const p of G.particles) {
+            if (!p.alive) continue;
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.12;
+            p.life -= p.decay;
+            if (p.life <= 0) p.alive = false;
+        }
+
+        // 更新浮动文字
+        for (const ft of G.floatingTexts) {
+            if (!ft.alive) continue;
+            ft.y += ft.vy;
+            ft.life -= 0.022;
+            if (ft.life <= 0) ft.alive = false;
+        }
+
+        // 连击横幅计时
+        if (G.comboBannerTimer > 0) {
+            G.comboBannerTimer -= dt;
+            if (G.comboBannerTimer <= 0) {
+                comboBanner.style.opacity = '0';
+                comboBanner.style.transform = 'translate(-50%, -50%) scale(0.5)';
+            }
+        }
+
+        // 定期清理死亡对象
+        if (Math.random() < 0.02) {
+            G.items = G.items.filter(i => i.alive);
+            G.particles = G.particles.filter(p => p.alive);
+            G.floatingTexts = G.floatingTexts.filter(f => f.alive);
+        }
+
+        updateHUD();
+    }
+
+    // =====================================================
+    //  主渲染循环
+    // =====================================================
+    function gameLoop(timestamp) {
+        if (!G.lastTime) G.lastTime = timestamp;
+        const dt = Math.min((timestamp - G.lastTime) / 1000, 0.1);
+        G.lastTime = timestamp;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 暗色遮罩
+        ctx.fillStyle = G.paused ? 'rgba(10, 10, 26, 0.5)' : 'rgba(10, 10, 26, 0.2)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (G.running) {
+            update(dt);
+            drawFaceMarker();
+            drawItems(dt);
+            drawBasket();
+            drawParticles();
+            drawFloatingTexts();
+            drawFaceNotFound();
+        }
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    // =====================================================
+    //  游戏流程
+    // =====================================================
+    function resetGame() {
+        G.score = 0;
+        G.lives = MAX_LIVES;
+        G.combo = 0;
+        G.maxCombo = 0;
+        G.caught = 0;
+        G.missed = 0;
+        G.level = 1;
+        G.items = [];
+        G.particles = [];
+        G.floatingTexts = [];
+        G.spawnInterval = 1500;
+        G.fallSpeed = 1.5;
+        G.lastSpawn = 0;
+        G.basketX = 0.5;
+        G.lastMilestone = 0;
+        G.shakeTime = 0;
+        G.comboBannerTimer = 0;
+        renderHearts();
+    }
+
+    function startGame() {
+        resetGame();
+        G.running = true;
+        G.paused = false;
+        pauseBtn.style.display = 'flex';
+        updateHUD();
+    }
+
+    function pauseGame() {
+        if (!G.running) return;
+        G.paused = !G.paused;
+        pauseOvl.style.display = G.paused ? 'flex' : 'none';
+        pauseBtn.textContent = G.paused ? '▶' : '❚❚';
+    }
+
+    function gameOver() {
+        G.running = false;
+        pauseBtn.style.display = 'none';
+
+        const isNewBest = G.score > G.bestScore;
+        if (isNewBest) {
+            G.bestScore = G.score;
+            localStorage.setItem(STORAGE_KEY, G.bestScore);
+        }
+
+        document.getElementById('final-score').textContent = G.score;
+        document.getElementById('stat-caught').textContent = G.caught;
+        document.getElementById('stat-missed').textContent = G.missed;
+        document.getElementById('stat-max-combo').textContent = G.maxCombo;
+        document.getElementById('stat-level').textContent = G.level;
+        document.getElementById('new-best-tag').className = 'go-new-best' + (isNewBest ? ' show' : '');
+
+        gameoverEl.style.display = 'flex';
+    }
+
+    function goHome() {
+        G.running = false;
+        G.paused = false;
+        pauseOvl.style.display = 'none';
+        gameoverEl.style.display = 'none';
+        pauseBtn.style.display = 'none';
+        startScreen.style.display = 'flex';
+        startBestEl.innerHTML = G.bestScore > 0 ? `历史最佳：<span>${G.bestScore}</span>` : '';
+    }
+
+    // =====================================================
+    //  事件
+    // =====================================================
+    document.getElementById('start-btn').addEventListener('click', async () => {
+        startScreen.style.display = 'none';
+        const ok = await initFaceMesh();
+        if (ok) {
+            startGame();
+            requestAnimationFrame(gameLoop);
+        }
+    });
+
+    document.getElementById('restart-btn').addEventListener('click', () => {
+        gameoverEl.style.display = 'none';
+        startGame();
+    });
+
+    document.getElementById('home-btn').addEventListener('click', goHome);
+
+    pauseBtn.addEventListener('click', pauseGame);
+    document.getElementById('resume-btn').addEventListener('click', pauseGame);
+    document.getElementById('quit-btn').addEventListener('click', goHome);
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            if (G.running) pauseGame();
+            return;
+        }
+        if (!G.running || G.paused) return;
+        if (e.key === 'ArrowLeft' || e.key === 'a') {
+            G.basketX = Math.max(0.05, G.basketX - 0.03);
+            G.faceDetected = true;
+        }
+        if (e.key === 'ArrowRight' || e.key === 'd') {
+            G.basketX = Math.min(0.95, G.basketX + 0.03);
+            G.faceDetected = true;
+        }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!G.running || G.paused) return;
+        G.basketX = e.clientX / canvas.width;
+        G.faceDetected = true;
+    });
+
+    // 初始化
+    renderHearts();
+    startBestEl.innerHTML = G.bestScore > 0 ? `历史最佳：<span>${G.bestScore}</span>` : '';
+    </script>
+</body>
+</html>
